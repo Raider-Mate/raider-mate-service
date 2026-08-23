@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -29,17 +30,31 @@ type assignmentResponse struct {
 	Reason      string            `json:"reason"`
 }
 
+// unseatedResponse is one raider on the event who holds no slot on this board. Reason
+// is the service's own sentence, meant to be rendered as it arrives, the same way
+// assignmentResponse.Reason is.
+type unseatedResponse struct {
+	CharacterID string            `json:"character_id"`
+	Character   *characterSummary `json:"character,omitempty"`
+	Status      string            `json:"status"`
+	SignedUpAt  time.Time         `json:"signed_up_at"`
+	Reason      string            `json:"reason"`
+}
+
 type advisoryResponse struct {
 	Role    string `json:"role,omitempty"`
 	Message string `json:"message"`
 }
 
 type boardResponse struct {
-	Name       string               `json:"name"`
-	Mode       string               `json:"mode"`
-	Slots      []assignmentResponse `json:"slots"`
-	Advisories []advisoryResponse   `json:"advisories,omitempty"`
-	Links      Links                `json:"_links"`
+	Name  string               `json:"name"`
+	Mode  string               `json:"mode"`
+	Slots []assignmentResponse `json:"slots"`
+	// Unseated is who signed up and did not make the board. Absent when everybody who
+	// could be placed was, which is what a board looks like the moment it is locked.
+	Unseated   []unseatedResponse `json:"unseated,omitempty"`
+	Advisories []advisoryResponse `json:"advisories,omitempty"`
+	Links      Links              `json:"_links"`
 }
 
 func compHref(eventID, name string) string {
@@ -72,6 +87,20 @@ func assignmentsToResponse(assignments []comp.Assignment, byID map[uuid.UUID]cha
 			CharacterID: a.CharacterID.String(), Character: lookupCharacter(byID, a.CharacterID),
 			Role:      string(a.Role),
 			SlotIndex: a.SlotIndex, IsBench: a.IsBench, Reason: a.Reason,
+		}
+	}
+	return out
+}
+
+func unseatedToResponse(unseated []comp.Unseated, byID map[uuid.UUID]characterSummary) []unseatedResponse {
+	if len(unseated) == 0 {
+		return nil
+	}
+	out := make([]unseatedResponse, len(unseated))
+	for i, u := range unseated {
+		out[i] = unseatedResponse{
+			CharacterID: u.CharacterID.String(), Character: lookupCharacter(byID, u.CharacterID),
+			Status: string(u.Status), SignedUpAt: u.SignedUpAt, Reason: u.Reason,
 		}
 	}
 	return out
@@ -158,7 +187,9 @@ func getCompHandler(reader *comp.Reader, characters *roster.Characters, events e
 
 		writeJSON(w, logger, http.StatusOK, boardResponse{
 			Name: board.Name, Mode: string(board.Mode), Slots: assignmentsToResponse(board.Slots, byID),
-			Links: compLinks(eventID.String(), name, board.Mode, actor.IsRaidLead),
+			Unseated:   unseatedToResponse(board.Unseated, byID),
+			Advisories: advisoriesToResponse(board.Advisories),
+			Links:      compLinks(eventID.String(), name, board.Mode, actor.IsRaidLead),
 		})
 	}
 }

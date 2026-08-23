@@ -147,6 +147,49 @@ func (s *Store) ListCompSlots(ctx context.Context, eventID uuid.UUID, compName s
 	return out, nil
 }
 
+// unseatedNoRoles and unseatedLate are the only two ways to hold no seat, and the
+// sentence for each is decided here so neither the bot nor the dashboard has to work out
+// which one it is looking at.
+const (
+	unseatedNoRoles = "no roles set, so the assigner cannot place them"
+	unseatedLate    = "signed up, no seat on this board"
+)
+
+// CompShape is the template and sizing rule a board is measured against, without the
+// pool. AssignmentPool reads the same two off the same event; the reader needs them on
+// their own, because a locked board is the turnout it is judged by.
+func (s *Store) CompShape(ctx context.Context, eventID uuid.UUID) (Template, Mode, error) {
+	event, err := s.queries.GetEvent(ctx, eventID)
+	if err != nil {
+		return Template{}, 0, fmt.Errorf("loading event: %w", err)
+	}
+
+	var tmpl Template
+	if err := json.Unmarshal(event.CompTemplate, &tmpl); err != nil {
+		return Template{}, 0, fmt.Errorf("parsing comp_template: %w", err)
+	}
+
+	return tmpl, modeFor(event), nil
+}
+
+func (s *Store) ListUnseated(ctx context.Context, eventID uuid.UUID, compName string) ([]Unseated, error) {
+	rows, err := s.queries.ListUnseatedForComp(ctx, db.ListUnseatedForCompParams{EventID: eventID, CompName: compName})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Unseated, len(rows))
+	for i, r := range rows {
+		reason := unseatedLate
+		if !r.HasRoles {
+			reason = unseatedNoRoles
+		}
+		out[i] = Unseated{
+			CharacterID: r.CharacterID, Status: r.Status, SignedUpAt: r.SignedUpAt.Time, Reason: reason,
+		}
+	}
+	return out, nil
+}
+
 // queueRedraw asks the bot to rebuild this event's message in Discord.
 //
 // The same trade a signup write makes: the board just changed, and the card in the

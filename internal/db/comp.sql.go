@@ -305,6 +305,73 @@ func (q *Queries) ListRolesForCharacters(ctx context.Context, characterIds []uui
 	return items, nil
 }
 
+const listUnseatedForComp = `-- name: ListUnseatedForComp :many
+SELECT
+    s.character_id,
+    s.status,
+    s.created_at AS signed_up_at,
+    EXISTS (SELECT 1 FROM character_roles cr WHERE cr.character_id = s.character_id) AS has_roles
+FROM signups s
+WHERE s.event_id = $1
+  AND s.status IN ('CONFIRMED', 'LATE')
+  AND NOT EXISTS (
+      SELECT 1 FROM comp_slots cs
+      WHERE cs.event_id = s.event_id
+        AND cs.comp_name = $2
+        AND cs.character_id = s.character_id
+  )
+ORDER BY s.created_at DESC, s.id DESC
+`
+
+type ListUnseatedForCompParams struct {
+	EventID  uuid.UUID
+	CompName string
+}
+
+type ListUnseatedForCompRow struct {
+	CharacterID uuid.UUID
+	Status      SignupStatus
+	SignedUpAt  pgtype.Timestamptz
+	HasRoles    bool
+}
+
+// Who is in the assignment pool and holds no slot on this comp. A board is a snapshot
+// taken by the last lock, and signups carry on after it, so this is how a raider who
+// arrived since then is visible at all.
+//
+// The pool test sits here rather than in Go for the reason DropCompSlotsForCharacter
+// gives below: it has to stay next to ListAssignmentPoolForEvent above.
+//
+// has_roles is what separates the two ways to end up here. Assign drops a character
+// with an empty role menu, because comp_slots.role is NOT NULL and there is no role to
+// record, so they are unseated by every lock rather than by arriving late.
+//
+// Newest first: the recent arrivals are what this answers.
+func (q *Queries) ListUnseatedForComp(ctx context.Context, arg ListUnseatedForCompParams) ([]ListUnseatedForCompRow, error) {
+	rows, err := q.db.Query(ctx, listUnseatedForComp, arg.EventID, arg.CompName)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListUnseatedForCompRow
+	for rows.Next() {
+		var i ListUnseatedForCompRow
+		if err := rows.Scan(
+			&i.CharacterID,
+			&i.Status,
+			&i.SignedUpAt,
+			&i.HasRoles,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const renameComp = `-- name: RenameComp :exec
 UPDATE comps SET name = $1
 WHERE event_id = $2 AND name = $3

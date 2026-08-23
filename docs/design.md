@@ -382,6 +382,38 @@ Nothing validates a manual board. A healer placed as a tank, a raider who never 
 up, an eleven-man Mythic roster: all are written exactly as asked. This is the same
 rule as the constraint step above, applied harder. The raid lead is the authority.
 
+**A board is a snapshot, and signups carry on after it.** Nothing in the signup write
+path consults comp state, and nothing re-runs the assigner, so a raider who signs up
+after a lock is stored, listed on the event, and holds no slot. The system already
+handles the opposite direction: leaving the pool drops the raider's seats and notifies
+the raid leads. Arriving is quieter, and used to be silent.
+
+`GET /events/{id}/comps/{name}` answers it with `unseated`: everyone in the assignment
+pool (`CONFIRMED` or `LATE`) holding no slot on that comp, newest signup first. Two
+kinds of raider land there, so each row carries the `reason` to show, the same contract
+`comp_slots.reason` has. One is the late arrival. The other is a character with an empty
+role menu, which `Assign` drops because `comp_slots.role` is `NOT NULL` and there is no
+role to record: it names them in an advisory, and advisories are computed at lock time
+and never persisted, so before this they were invisible on every board read.
+
+The membership test is SQL, in `ListUnseatedForComp`, next to the two other definitions
+of holding a seat. A client that diffs signups against slots itself is a fourth copy of
+that rule, and the drift is how a raider ends up assigned and absent at once.
+
+**Advisories are worked out on read, by `Advise`, from the slots being returned.** They
+are not the ones the lock reported and are not stored. Two reasons. A stored advisory
+describes the pool the assigner saw, and the board it sits beside can be hand-edited
+afterwards, so the sentence and the columns drift apart with nothing saying which is
+current. And a `MANUAL` comp never runs the assigner, so storing them would leave the
+one kind of board that gets none, when "HEALER: 1 seated, the comp asks for 4" is
+exactly what a raid lead wants before pulling a hand-built raid.
+
+`Advise` states the gap without claiming a cause, because a seat can be empty on a
+manual board because somebody meant it. The assigner's own "not enough signups" is a
+claim about the pool at lock time and stays on the lock response. Template departures
+come from `Resolve` in both paths, so a board and the lock that built it say the same
+thing about the same override.
+
 ---
 
 ## 6. Reminders and scheduling

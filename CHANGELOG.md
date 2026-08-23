@@ -12,6 +12,29 @@ Sections are `Added`, `Changed`, `Deprecated`, `Removed`, `Fixed`, `Security`.
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-08-23
+
+### Added
+
+- **A locked comp now says who signed up and did not make the board.**
+  `GET /api/events/{id}/comps/{name}` carries an `unseated` list beside its slots:
+  everyone confirmed or late for the event who holds no seat on that comp, newest signup
+  first, each with the reason to show. A board is the snapshot the last lock took, and
+  raiders keep signing up afterwards, so this is the only place a late arrival was
+  visible against the comp at all. Characters with no roles set are in the list too,
+  since the assigner cannot place them and said so only in an advisory that was never
+  stored. The key is absent when everybody who could be placed was.
+
+### Fixed
+
+- **Reading a comp now returns its advisories.** `GET /api/events/{id}/comps/{name}`
+  always answered with an empty advisory list, because advisories were worked out during
+  a lock and never stored, so every client drawing a comp from this endpoint had a panel
+  that could not fill. They are now derived from the slots on each read: the template's
+  departures from the suggestion, plus every role the board leaves short. Hand-built
+  comps get them too, for the first time. The assigner never runs on a manual board, so
+  "HEALER: 1 seated, the comp asks for 4" had no way to reach a raid lead before.
+
 ## [0.11.0] - 2026-08-22
 
 ### Changed

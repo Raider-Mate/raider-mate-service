@@ -502,3 +502,140 @@ func TestDropCompSlotsForCharacterEmptiesSeatsOfAWithdrawnSignup(t *testing.T) {
 		t.Errorf("dropped = %v, want both comps named", dropped)
 	}
 }
+
+// seedLateArrival adds a second raider to an event that already has a locked board,
+// which is the situation ListUnseatedForComp exists for.
+func seedLateArrival(
+	ctx context.Context, t *testing.T, q *Queries, event Event, discordID int64, status SignupStatus,
+) Character {
+	t.Helper()
+
+	user, err := q.UpsertUser(ctx, UpsertUserParams{ID: NewID(), DiscordID: discordID, DiscordGuildID: 100})
+	if err != nil {
+		t.Fatalf("upserting user: %v", err)
+	}
+	character, err := q.CreateCharacter(ctx, CreateCharacterParams{
+		ID:     NewID(),
+		UserID: user.ID, Name: "Latehealz", Realm: "Area-52", Region: "us", IsMain: true,
+	})
+	if err != nil {
+		t.Fatalf("creating character: %v", err)
+	}
+	if _, err := q.UpsertSignup(ctx, UpsertSignupParams{
+		ID:      NewID(),
+		EventID: event.ID, CharacterID: character.ID, Status: status,
+	}); err != nil {
+		t.Fatalf("signing up late arrival: %v", err)
+	}
+	return character
+}
+
+// The whole point: a board is the snapshot the last lock took, and somebody who signed
+// up afterwards holds no slot. Without this they are on the event and on no board.
+func TestListUnseatedForCompNamesWhoHoldsNoSlot(t *testing.T) {
+	ctx := context.Background()
+	q, _ := newTxQueries(ctx, t)
+
+	event, seated := seedEventForComp(ctx, t, q, 27)
+	seedLockedSlots(ctx, t, q, event, seated)
+
+	arrival := seedLateArrival(ctx, t, q, event, 127, SignupStatusCONFIRMED)
+	if err := q.SetCharacterRole(ctx, SetCharacterRoleParams{
+		CharacterID: arrival.ID, Role: RoleEnumHEALER, Priority: 1,
+	}); err != nil {
+		t.Fatalf("setting healer role: %v", err)
+	}
+
+	rows, err := q.ListUnseatedForComp(ctx, ListUnseatedForCompParams{EventID: event.ID, CompName: "prog"})
+	if err != nil {
+		t.Fatalf("listing unseated: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("unseated = %d rows, want 1", len(rows))
+	}
+	if rows[0].CharacterID != arrival.ID {
+		t.Errorf("unseated = %v, want the late arrival %v", rows[0].CharacterID, arrival.ID)
+	}
+	// A raider with a role menu is unseated because the board predates them, not because
+	// the assigner could not place them. The two read differently to a raid lead.
+	if !rows[0].HasRoles {
+		t.Error("has_roles = false, want true: the arrival set a role")
+	}
+}
+
+// Declined, tentative, absent and no-show never reach the assigner, so they were never
+// candidates for a seat and reporting them as missing one is noise.
+func TestListUnseatedForCompIgnoresSignupsOutsideThePool(t *testing.T) {
+	ctx := context.Background()
+	q, _ := newTxQueries(ctx, t)
+
+	event, seated := seedEventForComp(ctx, t, q, 28)
+	seedLockedSlots(ctx, t, q, event, seated)
+	seedLateArrival(ctx, t, q, event, 128, SignupStatusDECLINED)
+
+	rows, err := q.ListUnseatedForComp(ctx, ListUnseatedForCompParams{EventID: event.ID, CompName: "prog"})
+	if err != nil {
+		t.Fatalf("listing unseated: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Errorf("unseated = %d rows, want 0: a decline is not a missing seat", len(rows))
+	}
+}
+
+// Assign drops a character with an empty role menu, because comp_slots.role is NOT NULL
+// and there is no role to record. They are unseated by every lock rather than by
+// arriving late, and has_roles is what tells the two apart.
+func TestListUnseatedForCompFlagsAnEmptyRoleMenu(t *testing.T) {
+	ctx := context.Background()
+	q, _ := newTxQueries(ctx, t)
+
+	event, seated := seedEventForComp(ctx, t, q, 29)
+	seedLockedSlots(ctx, t, q, event, seated)
+	seedLateArrival(ctx, t, q, event, 129, SignupStatusCONFIRMED)
+
+	rows, err := q.ListUnseatedForComp(ctx, ListUnseatedForCompParams{EventID: event.ID, CompName: "prog"})
+	if err != nil {
+		t.Fatalf("listing unseated: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("unseated = %d rows, want 1", len(rows))
+	}
+	if rows[0].HasRoles {
+		t.Error("has_roles = true, want false: the arrival set no roles")
+	}
+}
+
+// One event holds several named drafts, and a raider seated in "farm" is still missing
+// from "prog". Answering per event rather than per comp would name the wrong people.
+func TestListUnseatedForCompAnswersPerComp(t *testing.T) {
+	ctx := context.Background()
+	q, _ := newTxQueries(ctx, t)
+
+	event, seated := seedEventForComp(ctx, t, q, 30)
+	seedLockedSlots(ctx, t, q, event, seated)
+
+	arrival := seedLateArrival(ctx, t, q, event, 130, SignupStatusCONFIRMED)
+	if err := q.InsertCompSlot(ctx, InsertCompSlotParams{
+		ID:      NewID(),
+		EventID: event.ID, CompName: "farm", CharacterID: arrival.ID,
+		Role: RoleEnumHEALER, SlotIndex: 2, IsBench: false, Reason: "HEALER: priority 1",
+	}); err != nil {
+		t.Fatalf("seating the arrival on farm: %v", err)
+	}
+
+	farm, err := q.ListUnseatedForComp(ctx, ListUnseatedForCompParams{EventID: event.ID, CompName: "farm"})
+	if err != nil {
+		t.Fatalf("listing unseated on farm: %v", err)
+	}
+	if len(farm) != 0 {
+		t.Errorf("farm unseated = %d rows, want 0: everybody in the pool holds a seat", len(farm))
+	}
+
+	prog, err := q.ListUnseatedForComp(ctx, ListUnseatedForCompParams{EventID: event.ID, CompName: "prog"})
+	if err != nil {
+		t.Fatalf("listing unseated on prog: %v", err)
+	}
+	if len(prog) != 1 || prog[0].CharacterID != arrival.ID {
+		t.Errorf("prog unseated = %v, want the arrival %v", prog, arrival.ID)
+	}
+}
