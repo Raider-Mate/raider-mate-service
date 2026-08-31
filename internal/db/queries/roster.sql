@@ -95,10 +95,24 @@ WHERE character_id = $1
 ORDER BY priority, role;
 
 -- name: ListCharactersInGuild :many
+-- The archived are off the roster by default and readable on request, never gone: the
+-- signup, comp and analysis reads join characters directly and must keep seeing them,
+-- or a leaver takes their own raid history with them.
 SELECT c.* FROM characters c
 JOIN users u ON u.id = c.user_id
-WHERE u.discord_guild_id = $1
+WHERE u.discord_guild_id = sqlc.arg(discord_guild_id)
+  AND (sqlc.arg(include_archived)::boolean OR c.archived_at IS NULL)
 ORDER BY c.name;
+
+-- name: SetCharacterArchived :execrows
+-- Guild-scoped, and idempotent on the way in: re-archiving keeps the date the raider
+-- actually left rather than stamping today over it. Un-archiving clears it outright.
+UPDATE characters c SET archived_at = CASE
+    WHEN NOT sqlc.arg(archived)::boolean THEN NULL
+    ELSE COALESCE(c.archived_at, now())
+END
+FROM users u
+WHERE c.user_id = u.id AND c.id = sqlc.arg(id) AND u.discord_guild_id = sqlc.arg(discord_guild_id);
 
 -- name: ListCharactersDueForSync :many
 -- Oldest-attempted first so a backlog drains fairly instead of starving whoever is
@@ -132,11 +146,26 @@ UPDATE characters SET
     raid_heroic_killed = sqlc.narg(raid_heroic_killed),
     raid_mythic_killed = sqlc.narg(raid_mythic_killed),
     last_synced = now(),
-    sync_attempted_at = now()
+    sync_attempted_at = now(),
+    -- The fetch found them, so whatever they were missing from, they are back.
+    not_found_since = NULL
 WHERE id = $1;
 
 -- name: TouchCharacterSynced :exec
-UPDATE characters SET last_synced = now(), sync_attempted_at = now()
+-- A fetch that found the character and changed nothing. Clears not_found_since, so a
+-- raider who came back from a rename stops reading as missing.
+UPDATE characters SET last_synced = now(), sync_attempted_at = now(), not_found_since = NULL
+WHERE id = $1;
+
+-- name: MarkCharacterNotFound :exec
+-- Raider.IO answered 404. The queue moves on and the stored numbers stay put, because
+-- they are the last true thing known about this character, but the row now says since
+-- when nobody has been able to confirm them. COALESCE keeps the first sighting: the
+-- date a raid lead reads is when the character went missing, not when it was last
+-- looked for.
+UPDATE characters SET
+    sync_attempted_at = now(),
+    not_found_since = COALESCE(not_found_since, now())
 WHERE id = $1;
 
 -- name: MarkCharacterSyncAttempted :exec

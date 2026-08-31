@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -33,6 +34,15 @@ type Character struct {
 	TierPieces       *int
 	// Progression in the raid the worker tracks, nil until it has been there.
 	Progression *RaidProgress
+
+	// ArchivedAt is when this character was taken off the roster, nil while they are
+	// on it. Archived rather than deleted because every foreign key into characters
+	// cascades, and a raider's signups are what attendance is computed from.
+	ArchivedAt *time.Time
+	// NotFoundSince is when Raider.IO started answering 404 for this character, nil
+	// while the last fetch found them. Evidence for a raid lead deciding who has left,
+	// never a decision on its own: a rename looks exactly like a departure from here.
+	NotFoundSince *time.Time
 }
 
 // RaidProgress is a character's kill count in one raid, carrying the raid's slug so a
@@ -69,7 +79,8 @@ type characterStore interface {
 	GetCharacterOwner(ctx context.Context, characterID uuid.UUID, discordGuildID int64) (int64, error)
 	DeleteCharacter(ctx context.Context, characterID uuid.UUID, discordGuildID int64) (bool, error)
 	SetCharacterMain(ctx context.Context, characterID uuid.UUID, discordGuildID int64, isMain bool) (bool, error)
-	ListCharactersInGuild(ctx context.Context, discordGuildID int64) ([]Character, error)
+	ListCharactersInGuild(ctx context.Context, discordGuildID int64, includeArchived bool) ([]Character, error)
+	SetCharacterArchived(ctx context.Context, characterID uuid.UUID, discordGuildID int64, archived bool) (bool, error)
 	ListCharactersByDiscord(ctx context.Context, discordID, discordGuildID int64) ([]Character, error)
 	ReplaceCharacterRoles(ctx context.Context, characterID uuid.UUID, roles []RoleChoice) error
 	ListCharacterRoles(ctx context.Context, characterID uuid.UUID) ([]RoleChoice, error)
@@ -155,8 +166,8 @@ func (c *Characters) OwnedByDiscord(ctx context.Context, characterID uuid.UUID, 
 	return owner == discordID, nil
 }
 
-func (c *Characters) ListForGuild(ctx context.Context, discordGuildID int64) ([]Character, error) {
-	characters, err := c.store.ListCharactersInGuild(ctx, discordGuildID)
+func (c *Characters) ListForGuild(ctx context.Context, discordGuildID int64, includeArchived bool) ([]Character, error) {
+	characters, err := c.store.ListCharactersInGuild(ctx, discordGuildID, includeArchived)
 	if err != nil {
 		return nil, fmt.Errorf("listing characters: %w", err)
 	}
@@ -203,6 +214,21 @@ func (c *Characters) Delete(ctx context.Context, characterID uuid.UUID, discordG
 		return fmt.Errorf("deleting character: %w", err)
 	}
 	if !deleted {
+		return ErrCharacterNotFound
+	}
+	return nil
+}
+
+// SetArchived takes a character off the roster, or puts them back on it. This is what
+// pruning a departed raider is: Delete cascades into signups, comp slots and snapshots,
+// so using it here would erase the raid history the guild is keeping. Nothing here
+// decides that somebody has left. A raid lead does, from evidence the roster shows.
+func (c *Characters) SetArchived(ctx context.Context, characterID uuid.UUID, discordGuildID int64, archived bool) error {
+	changed, err := c.store.SetCharacterArchived(ctx, characterID, discordGuildID, archived)
+	if err != nil {
+		return fmt.Errorf("archiving character: %w", err)
+	}
+	if !changed {
 		return ErrCharacterNotFound
 	}
 	return nil

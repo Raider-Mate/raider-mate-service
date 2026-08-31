@@ -12,6 +12,8 @@ Sections are `Added`, `Changed`, `Deprecated`, `Removed`, `Fixed`, `Security`.
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-08-31
+
 ### Added
 
 - **Characters now carry enchant compliance, tier count, and raid progression.**
@@ -35,6 +37,34 @@ Sections are `Added`, `Changed`, `Deprecated`, `Removed`, `Fixed`, `Security`.
   visible rather than silent. Which slots take an enchant is a constant in
   `internal/roster`, updated with the expansion.
 
+- **Characters can be archived, which is how a raider who left comes off the roster.**
+  `POST /api/characters/{id}/archive` takes a character off it and
+  `POST /api/characters/{id}/unarchive` puts them back, both offered as links to whoever
+  is already offered `delete`. `GET /api/guilds/{gid}/characters` returns the active
+  roster and takes `?include_archived=true` for the rest; every read that renders a name
+  onto a past signup or comp board keeps seeing the archived, unconditionally.
+
+  Deleting was the only tool for this and it was the wrong one. Every foreign key into
+  `characters` cascades, so removing a raider who left took their signups, their comp
+  slots and their gear snapshots with them, and attendance is computed from exactly those
+  rows: a guild tidying up last tier's leavers was quietly rewriting its own raid history.
+  Archiving keeps all of it and is reversible, which matters because most departures turn
+  out to be holidays. `DELETE` is unchanged and is still right for a registration typed
+  wrong an hour ago.
+
+  Nothing archives anybody on its own. Discord leaves and Raider.IO guild changes are
+  both too unreliable to act on unattended, so the service reports evidence and a raid
+  lead decides.
+
+- **The guild roster now carries each character's role menu.**
+  `GET /api/guilds/{gid}/characters` gained `roles`, the same priority-ordered list the
+  signup and comp responses already carried, so a client can group a roster by tank,
+  healer, melee, and ranged without asking per character. The first entry is the role a
+  raider plays first. A character who registered no roles omits the field rather than
+  sending an empty list, so "picked nothing" stays distinct from "picked none of these".
+  One batched query for the whole list; the single-character and write responses are
+  unchanged and still carry no menu.
+
 - **Events now carry their signup tally.** `GET /api/guilds/{gid}/events` and
   `GET /api/events/{id}` carry `signup_counts`, one entry per status with every status
   present even at zero. The dashboard's month calendar needed a count per raid night and
@@ -45,6 +75,45 @@ Sections are `Added`, `Changed`, `Deprecated`, `Removed`, `Fixed`, `Security`.
   being rendered, and that decision stays with the client rather than being baked into a
   number here. Create and edit responses omit the field; re-read the event if a write
   needs the tally.
+
+- **`POST /api/notifications/{id}/failed`, for a send Discord refused.** The bot could
+  only ack a notification, so a reminder the bot was not allowed to post, or a raider
+  with DMs closed, was acked and gone: one line in a log nobody was reading. Reporting
+  the failure here acks the row, because the same send would be refused again on the
+  next lease, and queues a `DELIVERY_FAILED` notification telling the raid leads in the
+  event's channel what did not arrive and what Discord said. A failed report is never
+  itself reported, or a broken channel would file reports about its own reports forever.
+  The report goes to the events channel because a raid lead is known here as a role
+  rather than as somebody to direct message, so when that channel is the broken thing
+  the reminder's own state is where it shows.
+
+  Needs migration `00015`, which adds the `DELIVERY_FAILED` notification kind. Bots must
+  understand that kind before this release goes out.
+
+- **`GET /api/events/{id}` says what became of the event's pre-event reminder.** A new
+  `reminder` object carries the resolved lead time, how it is delivered, and one word
+  for its state: `OFF`, `SCHEDULED` with the time it fires, `SENT`, `SKIPPED` with the
+  reason nobody was told, or `FAILED`. Clients render the word; they do not work it out
+  from job rows. Single-event reads only, since a list of thirty events has nowhere to
+  show thirty of them.
+
+### Fixed
+
+- **A character Raider.IO no longer has stops reporting itself as freshly synced.** A
+  rename, a realm transfer or a deleted character answers 404, and the worker recorded
+  that as a successful sync: the row kept last month's item level and a `last_synced` of
+  a minute ago, so a character that no longer exists read as a raider standing perfectly
+  still. Characters now carry `not_found_since`, the date the misses started, and it
+  clears the moment a fetch finds them again. One 404 still does not stop the batch.
+
+ A pre-event ping
+  for an event with no channel to post in, a signup deadline with nowhere to announce
+  itself, a reminder for an event nobody signed up to: all three finished with the job
+  marked `SENT`, exactly like a reminder that reached the whole raid. A guild whose
+  reminders had stopped arriving had no way to see it, and neither did anyone trying to
+  fix it. Those jobs now record why they told nobody, in a new
+  `scheduled_jobs.skip_reason` column (migration `00014`), and the worker logs the
+  outcome of every job it drains.
 
 ## [0.12.0] - 2026-08-23
 

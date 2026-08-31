@@ -90,6 +90,44 @@ func (in UpdateEventInput) changesWhatIsPosted() bool {
 		in.WarcraftLogsURL != nil
 }
 
+// ReminderJob is the pre-event reminder job an event has, as the store knows it.
+type ReminderJob struct {
+	Status     db.JobStatus
+	RunAt      time.Time
+	SkipReason *string
+}
+
+// ErrNoReminderJob means the event has no pre-event reminder job at all: it either
+// switched reminders off, or it was edited so late that the reminder's moment had
+// already passed and nothing was scheduled in its place.
+var ErrNoReminderJob = errors.New("no pre-event reminder job")
+
+// What became of an event's pre-event reminder. A client renders these; it does not
+// work them out, which is why the service reports one word rather than a job row.
+const (
+	ReminderOff       = "OFF"
+	ReminderScheduled = "SCHEDULED"
+	ReminderSent      = "SENT"
+	ReminderSkipped   = "SKIPPED"
+	ReminderFailed    = "FAILED"
+)
+
+// reasonNotScheduled is the skip reason for an event that has no job to report. It is
+// not written to the database: nothing was scheduled, so there is no row to write it
+// on. The commonest cause is an edit made inside the lead window, since an edit cancels
+// the pending jobs and reschedules only what is still in the future.
+const reasonNotScheduled = "not_scheduled"
+
+// ReminderState is what became of an event's pre-event reminder, for a client that
+// wants to say so. Reason is set on SKIPPED alone.
+type ReminderState struct {
+	LeadMinutes int32
+	Delivery    db.ReminderDelivery
+	RunsAt      *time.Time
+	State       string
+	Reason      *string
+}
+
 // eventStore is the persistence Events needs. Declared here, by the consumer.
 type eventStore interface {
 	CreateEvent(ctx context.Context, in CreateEventInput) (Event, error)
@@ -98,6 +136,8 @@ type eventStore interface {
 	ListPastEvents(ctx context.Context, discordGuildID int64) ([]Event, error)
 	UpdateEvent(ctx context.Context, in UpdateEventInput) (Event, error)
 	DeleteEvent(ctx context.Context, id uuid.UUID) error
+	PreEventReminderJob(ctx context.Context, eventID uuid.UUID) (ReminderJob, error)
+	GuildSettings(ctx context.Context, discordGuildID int64) (GuildSettings, error)
 	CountSignupsByStatus(ctx context.Context, eventIDs []uuid.UUID) (map[uuid.UUID]map[db.SignupStatus]int, error)
 }
 
@@ -157,6 +197,62 @@ func (e *Events) Get(ctx context.Context, id uuid.UUID) (Event, error) {
 		return Event{}, fmt.Errorf("loading event: %w", err)
 	}
 	return event, nil
+}
+
+// ReminderState reports what became of an event's pre-event reminder. A reminder that
+// reached nobody used to be indistinguishable from one that reached the whole raid, so
+// a guild had no way to notice one had stopped arriving.
+func (e *Events) ReminderState(ctx context.Context, event Event) (ReminderState, error) {
+	settings, err := e.store.GuildSettings(ctx, event.DiscordGuildID)
+	if err != nil {
+		return ReminderState{}, fmt.Errorf("reading guild settings: %w", err)
+	}
+
+	// The event's own lead is what its schedule was built from. Nil is an event older
+	// than the setting, and the guild default is what a reschedule would give it.
+	lead := settings.ReminderLead()
+	if event.ReminderLeadMinutes != nil {
+		lead = *event.ReminderLeadMinutes
+	}
+
+	state := ReminderState{LeadMinutes: lead, Delivery: settings.Delivery()}
+
+	job, err := e.store.PreEventReminderJob(ctx, event.ID)
+	if errors.Is(err, ErrNoReminderJob) {
+		// No job and no lead time is a raid lead switching reminders off, which needs
+		// no explaining. No job with a lead time means one was meant to fire.
+		if lead == 0 {
+			state.State = ReminderOff
+			return state, nil
+		}
+		reason := reasonNotScheduled
+		state.State, state.Reason = ReminderSkipped, &reason
+		return state, nil
+	}
+	if err != nil {
+		return ReminderState{}, fmt.Errorf("reading reminder job: %w", err)
+	}
+
+	switch job.Status {
+	case db.JobStatusPENDING:
+		runsAt := job.RunAt
+		state.State, state.RunsAt = ReminderScheduled, &runsAt
+	case db.JobStatusSENT:
+		// SENT with a reason is a job that finished having told nobody.
+		if job.SkipReason != nil {
+			state.State, state.Reason = ReminderSkipped, job.SkipReason
+			return state, nil
+		}
+		state.State = ReminderSent
+	case db.JobStatusFAILED:
+		state.State = ReminderFailed
+	// CANCELED only reaches here when every job for the event was canceled and none
+	// replaced it, which is the same story as having none at all.
+	default:
+		reason := reasonNotScheduled
+		state.State, state.Reason = ReminderSkipped, &reason
+	}
+	return state, nil
 }
 
 // ListUpcoming returns a guild's events that have not started yet, soonest first.

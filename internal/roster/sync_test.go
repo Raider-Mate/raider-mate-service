@@ -24,6 +24,7 @@ type fakeStore struct {
 	applied    []applySyncParams
 	touched    []uuid.UUID
 	attempted  []uuid.UUID
+	notFound   []uuid.UUID
 	dueErr     error
 	latestErrs map[uuid.UUID]error
 }
@@ -61,6 +62,11 @@ func (s *fakeStore) TouchSynced(_ context.Context, characterID uuid.UUID) error 
 
 func (s *fakeStore) MarkSyncAttempted(_ context.Context, characterID uuid.UUID) error {
 	s.attempted = append(s.attempted, characterID)
+	return nil
+}
+
+func (s *fakeStore) MarkNotFound(_ context.Context, characterID uuid.UUID) error {
+	s.notFound = append(s.notFound, characterID)
 	return nil
 }
 
@@ -198,7 +204,10 @@ func TestSyncDueFirstSyncWritesSnapshot(t *testing.T) {
 	}
 }
 
-func TestSyncDueCharacterNotFoundTouchesWithoutError(t *testing.T) {
+// A character Raider.IO no longer has is recorded as missing, not as synced. Marking
+// it synced was the old behaviour and it made a rename, a transfer or a deletion read
+// as a raider standing still with last month's item level.
+func TestSyncDueCharacterNotFoundRecordsTheMiss(t *testing.T) {
 	id := uuid.New()
 	store := &fakeStore{due: []db.Character{{ID: id, Region: "eu", Realm: "ravencrest", Name: "Ghost"}}}
 	fetcher := fetcherFunc(func(context.Context, string, string, string) (raiderio.Profile, error) {
@@ -207,11 +216,16 @@ func TestSyncDueCharacterNotFoundTouchesWithoutError(t *testing.T) {
 
 	s := NewSyncer(fetcher, store, GearRules{}, testLogger())
 	if err := s.SyncDue(context.Background(), time.Hour, 10); err != nil {
+		// Still not an error for the batch: one raider who renamed must not stop the
+		// other forty-nine from syncing.
 		t.Fatalf("SyncDue: %v", err)
 	}
 
-	if len(store.touched) != 1 {
-		t.Errorf("touched = %d, want 1", len(store.touched))
+	if len(store.notFound) != 1 {
+		t.Errorf("notFound = %d, want 1", len(store.notFound))
+	}
+	if len(store.touched) != 0 {
+		t.Errorf("touched = %d, want 0: a 404 is not a successful sync", len(store.touched))
 	}
 	if len(store.applied) != 0 {
 		t.Errorf("applied = %d, want 0", len(store.applied))

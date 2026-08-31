@@ -1,0 +1,24 @@
+meta {
+  name: mark notification failed
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/api/notifications/{{notificationId}}/failed
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "reason": "missing permissions (50013)"
+  }
+}
+
+docs {
+  What the bot could not send. The row is acked, because the same send would be refused
+  again on the next lease, and the raid lead is told in the events channel that it did
+  not arrive. Reason is the bot's own words, Discord's error code included: 50013 is a
+  missing permission, 50007 is a raider with DMs closed.
+}

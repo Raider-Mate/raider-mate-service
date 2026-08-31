@@ -58,3 +58,8 @@ RETURNING *;
 UPDATE notifications SET delivered_at = now()
 WHERE id = $1
   AND (sqlc.narg(guild_id)::bigint IS NULL OR discord_guild_id = sqlc.narg(guild_id));
+
+-- name: GetNotification :one
+-- One outbox row by id. The failure report the bot files needs to know what it could
+-- not deliver and for which event.
+SELECT * FROM notifications WHERE id = $1;

@@ -146,6 +146,10 @@ func (s *Store) MarkSyncAttempted(ctx context.Context, characterID uuid.UUID) er
 	return s.queries.MarkCharacterSyncAttempted(ctx, characterID)
 }
 
+func (s *Store) MarkNotFound(ctx context.Context, characterID uuid.UUID) error {
+	return s.queries.MarkCharacterNotFound(ctx, characterID)
+}
+
 // nilIfEmpty maps a missing field to SQL NULL, which UpdateCharacterFromSync
 // COALESCEs back to the stored value rather than blanking the column.
 func nilIfEmpty(s string) *string {
@@ -275,12 +279,24 @@ func (s *Store) SetCharacterMain(ctx context.Context, characterID uuid.UUID, dis
 	return rows > 0, nil
 }
 
-func (s *Store) ListCharactersInGuild(ctx context.Context, discordGuildID int64) ([]Character, error) {
-	rows, err := s.queries.ListCharactersInGuild(ctx, discordGuildID)
+func (s *Store) ListCharactersInGuild(ctx context.Context, discordGuildID int64, includeArchived bool) ([]Character, error) {
+	rows, err := s.queries.ListCharactersInGuild(ctx, db.ListCharactersInGuildParams{
+		DiscordGuildID: discordGuildID, IncludeArchived: includeArchived,
+	})
 	if err != nil {
 		return nil, err
 	}
 	return charactersFromRows(rows)
+}
+
+func (s *Store) SetCharacterArchived(ctx context.Context, characterID uuid.UUID, discordGuildID int64, archived bool) (bool, error) {
+	rows, err := s.queries.SetCharacterArchived(ctx, db.SetCharacterArchivedParams{
+		ID: characterID, DiscordGuildID: discordGuildID, Archived: archived,
+	})
+	if err != nil {
+		return false, err
+	}
+	return rows > 0, nil
 }
 
 func (s *Store) ListGuildsForDiscordUser(ctx context.Context, discordID int64) ([]int64, error) {
@@ -380,6 +396,9 @@ func characterFromRow(row db.Character) (Character, error) {
 		EnchantsMissing:  intPtr(row.EnchantsMissing),
 		EnchantsExpected: intPtr(row.EnchantsExpected),
 		TierPieces:       intPtr(row.TierPieces),
+
+		ArchivedAt:    timePtr(row.ArchivedAt),
+		NotFoundSince: timePtr(row.NotFoundSince),
 	}
 
 	// The slug is what says the other four mean anything. A row written before the
@@ -425,6 +444,15 @@ func charactersFromRows(rows []db.Character) ([]Character, error) {
 		out[i] = c
 	}
 	return out, nil
+}
+
+// timePtr converts a possibly-NULL timestamp column. NULL is the answer these two
+// columns give most of the time and it means something: not archived, not missing.
+func timePtr(t pgtype.Timestamptz) *time.Time {
+	if !t.Valid {
+		return nil
+	}
+	return &t.Time
 }
 
 // nullableFloat64 converts a possibly-NULL numeric column. NULL is a different fact

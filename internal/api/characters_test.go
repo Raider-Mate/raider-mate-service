@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -29,6 +30,9 @@ type fakeCharacterStore struct {
 	deleted  bool
 	mainSet  *bool
 	notFound bool
+	// archivedAt is the date SetCharacterArchived stamps, fixed so a test can assert
+	// on it. The real store uses now().
+	archivedAt time.Time
 	// exists makes RegisterCharacter report the raider already has this name, realm
 	// and region, which the real store maps from a 23505 on the unique index.
 	exists bool
@@ -76,8 +80,23 @@ func (f *fakeCharacterStore) SetCharacterMain(_ context.Context, _ uuid.UUID, _ 
 	return true, nil
 }
 
-func (f *fakeCharacterStore) ListCharactersInGuild(context.Context, int64) ([]roster.Character, error) {
+func (f *fakeCharacterStore) ListCharactersInGuild(_ context.Context, _ int64, includeArchived bool) ([]roster.Character, error) {
+	if f.character.ArchivedAt != nil && !includeArchived {
+		return nil, nil
+	}
 	return []roster.Character{f.character}, nil
+}
+
+func (f *fakeCharacterStore) SetCharacterArchived(_ context.Context, _ uuid.UUID, _ int64, archived bool) (bool, error) {
+	if f.notFound {
+		return false, nil
+	}
+	if archived {
+		f.character.ArchivedAt = &f.archivedAt
+	} else {
+		f.character.ArchivedAt = nil
+	}
+	return true, nil
 }
 
 func (f *fakeCharacterStore) ListCharactersByDiscord(context.Context, int64, int64) ([]roster.Character, error) {
@@ -115,6 +134,7 @@ func newCharacterFixture(ownerDiscordID int64) (*fakeCharacterStore, *roster.Cha
 			{Role: db.RoleEnumTANK, Priority: 1},
 			{Role: db.RoleEnumMDPS, Priority: 2},
 		},
+		archivedAt: time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC),
 	}
 	return store, roster.NewCharacters(store), id
 }
@@ -442,5 +462,144 @@ func TestCharacterResponseCarriesTheRaidSlugWithItsCounts(t *testing.T) {
 	}
 	if got.Bosses != 8 || got.Normal != 8 || got.Heroic != 6 || got.Mythic != 2 {
 		t.Errorf("counts = %+v, want 8/8/6/2", got)
+	}
+}
+
+// The roster is what the dashboard groups by role, so the list read has to carry the
+// menu. Priority order matters: the first entry is the role a raider plays first, and
+// that is the group they belong in.
+func TestListGuildCharactersCarriesTheRoleMenu(t *testing.T) {
+	_, characters, id := newCharacterFixture(1)
+	guild := strconv.FormatInt(homeGuild, 10)
+
+	w := httptest.NewRecorder()
+	r := requestAs(http.MethodGet, "/api/guilds/"+guild+"/characters", homeActor(false), "")
+	r.SetPathValue("gid", guild)
+
+	listGuildCharactersHandler(characters, testLogger())(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+	var got []characterResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decoding body: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != id.String() {
+		t.Fatalf("characters = %v, want the one in the fixture", got)
+	}
+	want := []roleChoiceResponse{{Role: "TANK", Priority: 1}, {Role: "MDPS", Priority: 2}}
+	if len(got[0].Roles) != len(want) {
+		t.Fatalf("roles = %v, want %v", got[0].Roles, want)
+	}
+	for i := range want {
+		if got[0].Roles[i] != want[i] {
+			t.Errorf("roles[%d] = %v, want %v", i, got[0].Roles[i], want[i])
+		}
+	}
+}
+
+// A character with no menu leaves the field out rather than sending []. Absent says
+// "this raider picked nothing", and a client grouping by role has to put them aside
+// rather than into a group.
+func TestCharacterResponseOmitsAnEmptyRoleMenu(t *testing.T) {
+	encoded, err := json.Marshal(characterToResponse(roster.Character{ID: uuid.New()}, true, false))
+	if err != nil {
+		t.Fatalf("marshalling character: %v", err)
+	}
+	// Decoded rather than string-matched: _links carries a "roles" transition of its
+	// own, and the field this is about is the one at the top level.
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &fields); err != nil {
+		t.Fatalf("decoding character: %v", err)
+	}
+	if _, ok := fields["roles"]; ok {
+		t.Errorf("character = %s, want no roles field", encoded)
+	}
+}
+
+// Archiving is offered to the same people delete is, and only one of the two directions
+// is ever a move from where the character currently is.
+func TestCharacterLinksOfferOneArchiveDirection(t *testing.T) {
+	character := roster.Character{ID: uuid.New(), Name: "Thrall"}
+
+	onRoster := characterToResponse(character, false, true)
+	if _, ok := onRoster.Links["archive"]; !ok {
+		t.Error("a character on the roster should be offered archive")
+	}
+	if _, ok := onRoster.Links["unarchive"]; ok {
+		t.Error("a character on the roster must not be offered unarchive")
+	}
+
+	archivedAt := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
+	character.ArchivedAt = &archivedAt
+	off := characterToResponse(character, false, true)
+	if _, ok := off.Links["unarchive"]; !ok {
+		t.Error("an archived character should be offered unarchive")
+	}
+	if _, ok := off.Links["archive"]; ok {
+		t.Error("an archived character must not be offered archive again")
+	}
+
+	// A guildmate who neither owns it nor leads raids is offered neither, the same way
+	// they are offered no delete.
+	stranger := characterToResponse(character, false, false)
+	if _, ok := stranger.Links["unarchive"]; ok {
+		t.Error("a stranger must not be offered unarchive")
+	}
+}
+
+func TestArchiveCharacterTakesItOffTheRoster(t *testing.T) {
+	store, characters, id := newCharacterFixture(1)
+	w := httptest.NewRecorder()
+
+	setCharacterArchivedHandler(characters, true, testLogger())(w, characterRequest(
+		http.MethodPost, "/api/characters/"+id.String()+"/archive", homeActor(true), id, ""))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+	var got characterResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decoding body: %v", err)
+	}
+	if got.ArchivedAt == nil {
+		t.Error("archived_at = nil, want the date it came off the roster")
+	}
+	if store.deleted {
+		t.Error("archiving must never delete: the signups hanging off this row are the attendance record")
+	}
+}
+
+// The roster read is the active roster. Everything that renders a name onto a past
+// signup or comp board asks for the archived too, or a raider who left takes their own
+// raid history off every board they were ever on.
+func TestListGuildCharactersHidesTheArchivedUnlessAsked(t *testing.T) {
+	store, characters, _ := newCharacterFixture(1)
+	archivedAt := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
+	store.character.ArchivedAt = &archivedAt
+	guild := strconv.FormatInt(homeGuild, 10)
+
+	list := func(query string) []characterResponse {
+		t.Helper()
+		w := httptest.NewRecorder()
+		r := requestAs(http.MethodGet, "/api/guilds/"+guild+"/characters"+query, homeActor(false), "")
+		r.SetPathValue("gid", guild)
+		listGuildCharactersHandler(characters, testLogger())(w, r)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+		}
+		var got []characterResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+			t.Fatalf("decoding body: %v", err)
+		}
+		return got
+	}
+
+	if got := list(""); len(got) != 0 {
+		t.Errorf("default roster = %d characters, want 0", len(got))
+	}
+	if got := list("?include_archived=true"); len(got) != 1 {
+		t.Errorf("roster with archived = %d characters, want 1", len(got))
 	}
 }

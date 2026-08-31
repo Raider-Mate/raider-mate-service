@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -39,9 +40,22 @@ type characterResponse struct {
 	// Progression is the raid the worker tracks, absent until this character has been
 	// there. Pointers rather than zeros throughout, for the same reason.
 	Progression *progressionResponse `json:"progression,omitempty"`
-	IsMain      bool                 `json:"is_main"`
-	Synced      bool                 `json:"synced"`
-	Links       Links                `json:"_links"`
+	// Roles is the character's role menu, in priority order, so the first entry is the
+	// role they signed up to play first. Only the roster read carries it: it costs a
+	// second query, and the write paths answer a question nobody asked. Absent means no
+	// menu registered, which is not the same as an empty one.
+	Roles  []roleChoiceResponse `json:"roles,omitempty"`
+	IsMain bool                 `json:"is_main"`
+	Synced bool                 `json:"synced"`
+	// ArchivedAt is when this character was taken off the roster, absent while they are
+	// on it. Present means the row is kept for the history hanging off it and is not
+	// part of the active roster.
+	ArchivedAt *time.Time `json:"archived_at,omitempty"`
+	// NotFoundSince is when Raider.IO started answering 404 for this character. Absent
+	// while the last fetch found them. Evidence, never a verdict: a rename reads
+	// identically to a raider who quit the game.
+	NotFoundSince *time.Time `json:"not_found_since,omitempty"`
+	Links         Links      `json:"_links"`
 }
 
 // progressionResponse is a character's standing in one raid. The slug rides along so a
@@ -53,6 +67,14 @@ type progressionResponse struct {
 	Normal int    `json:"normal"`
 	Heroic int    `json:"heroic"`
 	Mythic int    `json:"mythic"`
+}
+
+// withRoles attaches a role menu to a response, the way withSignupCounts attaches a
+// tally to an event. Separate from characterToResponse because only the roster read
+// has the menus in hand, already batched.
+func withRoles(resp characterResponse, roles []roster.RoleChoice) characterResponse {
+	resp.Roles = roleChoicesToResponse(roles)
+	return resp
 }
 
 // characterToResponse renders one character. The two flags gate different links,
@@ -69,6 +91,12 @@ func characterToResponse(c roster.Character, owned, isRaidLead bool) characterRe
 	links.add(owned, "roles", href+"/roles", "PUT")
 	links.add(owned || isRaidLead, "edit", href, "PATCH")
 	links.add(owned || isRaidLead, "delete", href, "DELETE")
+	// Only one of the two is ever offered, because only one of them is a move from
+	// here. Same audience as delete: taking a departed raider off the roster is the
+	// hygiene that delete was being misused for.
+	mayArchive := owned || isRaidLead
+	links.add(mayArchive && c.ArchivedAt == nil, "archive", href+"/archive", "POST")
+	links.add(mayArchive && c.ArchivedAt != nil, "unarchive", href+"/unarchive", "POST")
 
 	var progression *progressionResponse
 	if p := c.Progression; p != nil {
@@ -97,9 +125,11 @@ func characterToResponse(c roster.Character, owned, isRaidLead bool) characterRe
 		TierPieces:       c.TierPieces,
 		Progression:      progression,
 
-		IsMain: c.IsMain,
-		Synced: c.Synced,
-		Links:  links,
+		IsMain:        c.IsMain,
+		Synced:        c.Synced,
+		ArchivedAt:    c.ArchivedAt,
+		NotFoundSince: c.NotFoundSince,
+		Links:         links,
 	}
 }
 
@@ -144,7 +174,10 @@ func characterSummaries(list []roster.Character, roles map[uuid.UUID][]roster.Ro
 // guildRoster reads a guild's characters and their role menus, indexed for rendering
 // them inside someone else's resource.
 func guildRoster(ctx context.Context, characters *roster.Characters, discordGuildID int64) (map[uuid.UUID]characterSummary, error) {
-	list, err := characters.ListForGuild(ctx, discordGuildID)
+	// Archived included, deliberately. This indexes the roster for rendering names on
+	// signups and comp boards, and a raider archived last week still has to have a name
+	// on the raid they attended the week before.
+	list, err := characters.ListForGuild(ctx, discordGuildID, true)
 	if err != nil {
 		return nil, err
 	}
@@ -236,7 +269,11 @@ func listGuildCharactersHandler(characters *roster.Characters, logger *slog.Logg
 			return
 		}
 
-		list, err := characters.ListForGuild(r.Context(), guildID)
+		// The roster is the active roster unless the caller says otherwise. A dashboard
+		// showing who has left asks for them; nothing else has to know they exist.
+		includeArchived := r.URL.Query().Get("include_archived") == "true"
+
+		list, err := characters.ListForGuild(r.Context(), guildID, includeArchived)
 		if err != nil {
 			logger.ErrorContext(r.Context(), "listing characters", "error", err)
 			writeError(w, logger, http.StatusInternalServerError, "internal error")
@@ -256,9 +293,22 @@ func listGuildCharactersHandler(characters *roster.Characters, logger *slog.Logg
 			owned[c.ID] = true
 		}
 
+		// The roster is the one read that groups by role, so it is the one read that
+		// pays for the menus. One batched query for the whole list.
+		ids := make([]uuid.UUID, len(list))
+		for i, c := range list {
+			ids[i] = c.ID
+		}
+		roles, err := characters.ListRolesForMany(r.Context(), ids)
+		if err != nil {
+			logger.ErrorContext(r.Context(), "listing character roles", "error", err)
+			writeError(w, logger, http.StatusInternalServerError, "internal error")
+			return
+		}
+
 		out := make([]characterResponse, len(list))
 		for i, c := range list {
-			out[i] = characterToResponse(c, owned[c.ID], actor.IsRaidLead)
+			out[i] = withRoles(characterToResponse(c, owned[c.ID], actor.IsRaidLead), roles[c.ID])
 		}
 		writeJSON(w, logger, http.StatusOK, out)
 	}
@@ -503,6 +553,45 @@ func deleteCharacterHandler(characters *roster.Characters, logger *slog.Logger) 
 		}
 
 		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// setCharacterArchivedHandler takes a character off the roster, or puts them back.
+//
+// Separate from DELETE on purpose, and the reason is in the schema: every foreign key
+// into characters cascades, so deleting a raider who has left takes their signups,
+// their comp slots and their gear snapshots with them, and attendance is computed from
+// exactly those rows. Delete is for a registration typed wrong an hour ago. This is for
+// a raider who left, and it is reversible, because most of them come back.
+func setCharacterArchivedHandler(characters *roster.Characters, archived bool, logger *slog.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		characterID, owned, ok := requireWritableCharacter(w, r, characters, logger)
+		if !ok {
+			return
+		}
+
+		actor, _ := actorFromContext(r.Context())
+		guildID := int64(actor.GuildID) //nolint:gosec
+		if err := characters.SetArchived(r.Context(), characterID, guildID, archived); err != nil {
+			if errors.Is(err, roster.ErrCharacterNotFound) {
+				writeError(w, logger, http.StatusNotFound, "character not found")
+				return
+			}
+			logger.ErrorContext(r.Context(), "archiving character", "error", err, "archived", archived)
+			writeError(w, logger, http.StatusInternalServerError, "internal error")
+			return
+		}
+
+		// Read back rather than echoing the request: the caller needs the new links,
+		// and archive and unarchive swap which of the two it is offered.
+		character, err := characters.GetInGuild(r.Context(), characterID, guildID)
+		if err != nil {
+			logger.ErrorContext(r.Context(), "reading archived character", "error", err)
+			writeError(w, logger, http.StatusInternalServerError, "internal error")
+			return
+		}
+
+		writeJSON(w, logger, http.StatusOK, characterToResponse(character, owned, actor.IsRaidLead))
 	}
 }
 

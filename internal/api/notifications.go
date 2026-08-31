@@ -53,6 +53,7 @@ func notificationToResponse(n signup.StoredNotification) notificationResponse {
 
 	links := Links{}
 	links.add(true, "delivered", "/api/notifications/"+n.ID.String()+"/delivered", "POST")
+	links.add(true, "failed", "/api/notifications/"+n.ID.String()+"/failed", "POST")
 
 	return notificationResponse{
 		ID:             n.ID.String(),
@@ -134,6 +135,54 @@ func markNotificationDeliveredHandler(outbox *signup.Outbox, logger *slog.Logger
 			writeError(w, logger, http.StatusNotFound, "notification not found")
 		case err != nil:
 			logger.ErrorContext(r.Context(), "marking notification delivered", "error", err)
+			writeError(w, logger, http.StatusInternalServerError, "internal error")
+		default:
+			w.WriteHeader(http.StatusNoContent)
+		}
+	}
+}
+
+// markNotificationFailedHandler is the bot reporting a send Discord refused. It acks
+// the row, because the same send would be refused again on the next lease, and queues a
+// line to the raid lead saying what did not arrive. A reminder that vanished silently
+// was the whole reason this route exists.
+type markNotificationFailedRequest struct {
+	// Reason is what the bot will say to the raid lead. Its Discord error code belongs
+	// in here too: 50013 reads differently from a timeout.
+	Reason string `json:"reason"`
+}
+
+// maxFailureReasonLength keeps a raid lead's channel readable. The bot writes this
+// text, so the cap is a guard rather than validation of anything a raider typed.
+const maxFailureReasonLength = 300
+
+func markNotificationFailedHandler(outbox *signup.Outbox, logger *slog.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, err := pathUUID(r, "id")
+		if err != nil {
+			writeError(w, logger, http.StatusBadRequest, err.Error())
+			return
+		}
+
+		var req markNotificationFailedRequest
+		if err := decodeJSON(r, &req); err != nil {
+			writeError(w, logger, http.StatusBadRequest, err.Error())
+			return
+		}
+		if req.Reason == "" {
+			writeError(w, logger, http.StatusBadRequest, "reason is required")
+			return
+		}
+		if len(req.Reason) > maxFailureReasonLength {
+			req.Reason = req.Reason[:maxFailureReasonLength]
+		}
+
+		err = outbox.MarkFailed(r.Context(), id, req.Reason)
+		switch {
+		case errors.Is(err, signup.ErrNotificationNotFound):
+			writeError(w, logger, http.StatusNotFound, "notification not found")
+		case err != nil:
+			logger.ErrorContext(r.Context(), "marking notification failed", "error", err)
 			writeError(w, logger, http.StatusInternalServerError, "internal error")
 		default:
 			w.WriteHeader(http.StatusNoContent)

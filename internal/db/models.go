@@ -287,6 +287,7 @@ const (
 	NotificationKindSIGNUPCHANGED    NotificationKind = "SIGNUP_CHANGED"
 	NotificationKindCOMPCHANGED      NotificationKind = "COMP_CHANGED"
 	NotificationKindEVENTCHANGED     NotificationKind = "EVENT_CHANGED"
+	NotificationKindDELIVERYFAILED   NotificationKind = "DELIVERY_FAILED"
 )
 
 func (e *NotificationKind) Scan(src interface{}) error {
@@ -694,6 +695,8 @@ type Character struct {
 	RaidNormalKilled *int16
 	RaidHeroicKilled *int16
 	RaidMythicKilled *int16
+	ArchivedAt       pgtype.Timestamptz
+	NotFoundSince    pgtype.Timestamptz
 }
 
 type CharacterRole struct {
@@ -804,12 +807,13 @@ type Notification struct {
 }
 
 type ScheduledJob struct {
-	ID       uuid.UUID
-	EventID  uuid.UUID
-	JobType  JobEnum
-	RunAt    pgtype.Timestamptz
-	Status   JobStatus
-	Attempts int16
+	ID         uuid.UUID
+	EventID    uuid.UUID
+	JobType    JobEnum
+	RunAt      pgtype.Timestamptz
+	Status     JobStatus
+	Attempts   int16
+	SkipReason *string
 }
 
 type Signup struct {

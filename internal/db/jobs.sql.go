@@ -23,7 +23,7 @@ func (q *Queries) CancelJobsForEvent(ctx context.Context, eventID uuid.UUID) err
 }
 
 const claimDueJobs = `-- name: ClaimDueJobs :many
-SELECT id, event_id, job_type, run_at, status, attempts FROM scheduled_jobs
+SELECT id, event_id, job_type, run_at, status, attempts, skip_reason FROM scheduled_jobs
 WHERE status = 'PENDING' AND run_at <= now()
 ORDER BY run_at
 LIMIT $1
@@ -46,6 +46,7 @@ func (q *Queries) ClaimDueJobs(ctx context.Context, rowLimit int32) ([]Scheduled
 			&i.RunAt,
 			&i.Status,
 			&i.Attempts,
+			&i.SkipReason,
 		); err != nil {
 			return nil, err
 		}
@@ -55,6 +56,31 @@ func (q *Queries) ClaimDueJobs(ctx context.Context, rowLimit int32) ([]Scheduled
 		return nil, err
 	}
 	return items, nil
+}
+
+const getPreEventReminderJob = `-- name: GetPreEventReminderJob :one
+SELECT id, event_id, job_type, run_at, status, attempts, skip_reason FROM scheduled_jobs
+WHERE event_id = $1 AND job_type = 'REMINDER_PRE_EVENT'
+ORDER BY (status = 'CANCELED'), run_at DESC
+LIMIT 1
+`
+
+// The pre-event reminder an event currently has, for reporting what became of it.
+// An edit cancels the old jobs and schedules new ones, so a long-lived event has more
+// than one row here: the live one is what to report, and CANCELED sorts last.
+func (q *Queries) GetPreEventReminderJob(ctx context.Context, eventID uuid.UUID) (ScheduledJob, error) {
+	row := q.db.QueryRow(ctx, getPreEventReminderJob, eventID)
+	var i ScheduledJob
+	err := row.Scan(
+		&i.ID,
+		&i.EventID,
+		&i.JobType,
+		&i.RunAt,
+		&i.Status,
+		&i.Attempts,
+		&i.SkipReason,
+	)
+	return i, err
 }
 
 const markJobFailed = `-- name: MarkJobFailed :exec
@@ -81,6 +107,24 @@ WHERE id = $1
 
 func (q *Queries) MarkJobSent(ctx context.Context, id uuid.UUID) error {
 	_, err := q.db.Exec(ctx, markJobSent, id)
+	return err
+}
+
+const markJobSkipped = `-- name: MarkJobSkipped :exec
+UPDATE scheduled_jobs SET status = 'SENT', skip_reason = $2
+WHERE id = $1
+`
+
+type MarkJobSkippedParams struct {
+	ID         uuid.UUID
+	SkipReason *string
+}
+
+// Done, but it notified nobody, and the reason says why. Status stays SENT because the
+// job is finished either way; what changes is that the row no longer claims a send it
+// did not make.
+func (q *Queries) MarkJobSkipped(ctx context.Context, arg MarkJobSkippedParams) error {
+	_, err := q.db.Exec(ctx, markJobSkipped, arg.ID, arg.SkipReason)
 	return err
 }
 

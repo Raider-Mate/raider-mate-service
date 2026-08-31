@@ -71,6 +71,8 @@ func NewRouter(pool *pgxpool.Pool, apiKey string, queued queueWatcher, logger *s
 	apiMux.HandleFunc("GET /api/users/{did}/characters", listUserCharactersHandler(characters, logger))
 	apiMux.HandleFunc("PATCH /api/characters/{cid}", patchCharacterHandler(characters, logger))
 	apiMux.HandleFunc("DELETE /api/characters/{cid}", deleteCharacterHandler(characters, logger))
+	apiMux.HandleFunc("POST /api/characters/{cid}/archive", setCharacterArchivedHandler(characters, true, logger))
+	apiMux.HandleFunc("POST /api/characters/{cid}/unarchive", setCharacterArchivedHandler(characters, false, logger))
 	apiMux.HandleFunc("GET /api/characters/{cid}/roles", getCharacterRolesHandler(characters, logger))
 	apiMux.HandleFunc("PUT /api/characters/{cid}/roles", putCharacterRolesHandler(characters, logger))
 
@@ -104,6 +106,8 @@ func NewRouter(pool *pgxpool.Pool, apiKey string, queued queueWatcher, logger *s
 		requireServiceKey(listNotificationsHandler(outbox, logger), apiKey, logger))
 	mux.Handle("POST /api/notifications/{id}/delivered",
 		requireServiceKey(markNotificationDeliveredHandler(outbox, logger), apiKey, logger))
+	mux.Handle("POST /api/notifications/{id}/failed",
+		requireServiceKey(markNotificationFailedHandler(outbox, logger), apiKey, logger))
 	mux.Handle("GET /api/notifications/stream",
 		requireServiceKey(streamNotificationsHandler(queued, logger), apiKey, logger))
 

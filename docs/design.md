@@ -33,6 +33,57 @@ they can play).
 Goal: a self-hosted-quality signup bot with a real dashboard, built around the
 assumption that raiders play more than one role.
 
+### Positioning against WoWUtils
+
+WoWUtils is the nearest thing to a competitor and mostly is not one. It plans the pull:
+cooldowns on a boss timeline, per-boss assignments, Warcraft Logs review, in-game note
+export, and a solver that arranges splits for loot. Signups arrive through its Discord
+bot as a side effect of that. Raider Mate does the other half of the raid week, the part
+before anyone zones in, which is who is coming, what they can play, and who sits.
+
+Do not chase the timeline. Cooldown planning, log parsing and sim-backed loot lists need
+top-end raid knowledge and an addon pipeline, and they are the thing WoWUtils is
+genuinely good at. A worse version of it would cost the whole of v0.1 and win nobody.
+
+What separates the two, in the order it matters:
+
+**Open source and self-hostable.** WoWUtils is proprietary SaaS and cannot follow
+without giving up its own business. A guild that watched Instancer go quiet understands
+immediately what that difference buys. It is the only structural item on this list.
+
+**Flex raiders are the data model, not a workaround.** Roles live on the character in
+priority order (section 3). Raid-Helper and WoWUtils' bot both ask for one role at
+signup. The pitch is concrete rather than architectural: your two flex tanks stop being
+eaten by the DPS pool.
+
+**A signup is the raider's own answer and a raid lead cannot rewrite it** (section 3).
+Everything else in this space sells to the officer. Selling to the bench as well is a
+position nobody currently holds, and it is how adoption travels upward, since raiders
+ask their GM for the thing that treats them fairly.
+
+**No addon.** The roster data WoWUtils is best at needs an in-game addon installed
+across the raid. Raider Mate reads Raider.IO and asks for nothing installed. In a 25-man
+heroic guild, "everyone installs an addon" is the step where a rollout dies.
+
+**Discord first.** The dashboard is where a raid lead does the fiddly work. The channel
+is where the other twenty-four people already are.
+
+The segments differ too, which is what makes the overlap survivable. WoWUtils sells to
+teams optimising a mythic kill. Raider Mate sells to guilds that struggle to field
+twenty people on a Wednesday. Bench fairness and attendance trends matter more to that
+guild than cooldown ordering, which is why they are the Premium features in section 7
+and a comp validator is not the headline. Price says the same thing: a flat €2.99 per
+server with everything included, printed as a number on the landing page rather than
+hidden behind a supporter tier.
+
+The two products are complementary, so a comp export in a format their planner reads
+would put Raider Mate at the front of one workflow instead of opposite it. Worth
+considering after v1.
+
+The line, for the README and the site:
+
+> Open-source raid signups that understand flex players. Host it yourself, or don't.
+
 ---
 
 ## 2. Architecture

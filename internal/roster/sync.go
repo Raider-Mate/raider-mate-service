@@ -51,6 +51,7 @@ type syncStore interface {
 	ApplySync(ctx context.Context, arg applySyncParams) error
 	TouchSynced(ctx context.Context, characterID uuid.UUID) error
 	MarkSyncAttempted(ctx context.Context, characterID uuid.UUID) error
+	MarkNotFound(ctx context.Context, characterID uuid.UUID) error
 }
 
 // Syncer refreshes cached character data from Raider.IO.
@@ -104,8 +105,13 @@ func (s *Syncer) SyncDue(ctx context.Context, staleAfter time.Duration, limit in
 func (s *Syncer) syncOne(ctx context.Context, c db.Character) error {
 	profile, err := s.fetcher.CharacterProfile(ctx, c.Region, c.Realm, c.Name)
 	if errors.Is(err, raiderio.ErrCharacterNotFound) {
+		// Not a successful sync, which is what this used to record. A renamed,
+		// transferred or deleted character kept its last known numbers and a fresh
+		// last_synced, so it read as a raider standing perfectly still. The row now
+		// says since when nobody has been able to confirm any of it, which is the
+		// evidence a raid lead needs to decide whether they have left.
 		s.logger.WarnContext(ctx, "character not found on raider.io", "character_id", c.ID)
-		return s.store.TouchSynced(ctx, c.ID)
+		return s.store.MarkNotFound(ctx, c.ID)
 	}
 	if err != nil {
 		return fmt.Errorf("fetching profile: %w", err)

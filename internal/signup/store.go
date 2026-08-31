@@ -683,6 +683,31 @@ func (s *Store) ClaimNotifications(ctx context.Context, guildID *int64, claimedB
 	return out, nil
 }
 
+// GetNotification reads one outbox row back. The failure report the bot files names
+// only an id, so this is how the service learns what it was.
+func (s *Store) GetNotification(ctx context.Context, id uuid.UUID) (StoredNotification, error) {
+	row, err := s.queries.GetNotification(ctx, id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return StoredNotification{}, ErrNotificationNotFound
+	}
+	if err != nil {
+		return StoredNotification{}, err
+	}
+	return StoredNotification{
+		ID:             row.ID,
+		DiscordGuildID: row.DiscordGuildID,
+		EventID:        row.EventID,
+		Kind:           row.Kind,
+		TargetKind:     row.TargetKind,
+		DiscordID:      row.DiscordID,
+		RoleIDs:        row.RoleIds,
+		DiscordIDs:     row.DiscordIds,
+		ChannelID:      row.ChannelID,
+		Payload:        row.Payload,
+		CreatedAt:      row.CreatedAt.Time,
+	}, nil
+}
+
 func (s *Store) MarkNotificationDelivered(ctx context.Context, id uuid.UUID, discordGuildID *int64) error {
 	rows, err := s.queries.MarkNotificationDelivered(ctx, db.MarkNotificationDeliveredParams{
 		ID: id, GuildID: discordGuildID,
@@ -718,6 +743,28 @@ func (s *Store) ClaimDueJobs(ctx context.Context, limit int32) ([]db.ScheduledJo
 
 func (s *Store) MarkJobSent(ctx context.Context, id uuid.UUID) error {
 	return s.queries.MarkJobSent(ctx, id)
+}
+
+func (s *Store) MarkJobSkipped(ctx context.Context, id uuid.UUID, reason string) error {
+	return s.queries.MarkJobSkipped(ctx, db.MarkJobSkippedParams{ID: id, SkipReason: &reason})
+}
+
+// PreEventReminderJob returns the pre-event reminder job an event currently has.
+// ErrNoReminderJob means there is none: the event switched reminders off, or it was
+// edited past the point where one could still fire.
+func (s *Store) PreEventReminderJob(ctx context.Context, eventID uuid.UUID) (ReminderJob, error) {
+	row, err := s.queries.GetPreEventReminderJob(ctx, eventID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ReminderJob{}, ErrNoReminderJob
+	}
+	if err != nil {
+		return ReminderJob{}, err
+	}
+	return ReminderJob{
+		Status:     row.Status,
+		RunAt:      row.RunAt.Time,
+		SkipReason: row.SkipReason,
+	}, nil
 }
 
 func (s *Store) MarkJobFailed(ctx context.Context, id uuid.UUID, status db.JobStatus) error {

@@ -74,6 +74,33 @@ func (q *Queries) ClaimNotifications(ctx context.Context, arg ClaimNotifications
 	return items, nil
 }
 
+const getNotification = `-- name: GetNotification :one
+SELECT id, discord_guild_id, event_id, kind, target_kind, discord_id, role_ids, channel_id, payload, created_at, delivered_at, claimed_at, discord_ids FROM notifications WHERE id = $1
+`
+
+// One outbox row by id. The failure report the bot files needs to know what it could
+// not deliver and for which event.
+func (q *Queries) GetNotification(ctx context.Context, id uuid.UUID) (Notification, error) {
+	row := q.db.QueryRow(ctx, getNotification, id)
+	var i Notification
+	err := row.Scan(
+		&i.ID,
+		&i.DiscordGuildID,
+		&i.EventID,
+		&i.Kind,
+		&i.TargetKind,
+		&i.DiscordID,
+		&i.RoleIds,
+		&i.ChannelID,
+		&i.Payload,
+		&i.CreatedAt,
+		&i.DeliveredAt,
+		&i.ClaimedAt,
+		&i.DiscordIds,
+	)
+	return i, err
+}
+
 const insertNotification = `-- name: InsertNotification :execrows
 INSERT INTO notifications (id, discord_guild_id, event_id, kind, target_kind, discord_id, role_ids, discord_ids, channel_id, payload)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)

@@ -16,6 +16,20 @@ import (
 // retrying and flips to FAILED. Without this, attempts is a column nothing ever reads.
 const maxJobAttempts = 3
 
+// A job that writes no notification records why. Without this, a pre-event ping for an
+// event with no channel to post in ended SENT, exactly like one that reached the whole
+// raid, and a reminder nobody received was invisible in the data.
+const (
+	// skipNoChannel: the guild's events channel is not known for this event, so there
+	// is nowhere to post. An event created from the dashboard whose signup sheet was
+	// never announced is the way this happens.
+	skipNoChannel = "no_channel"
+	// skipNoRecipients: nobody to tell. Everyone answered, or nobody did.
+	skipNoRecipients = "no_recipients"
+	// skipKindRetired: a job kind that is no longer sent, drained rather than failed.
+	skipKindRetired = "kind_retired"
+)
+
 // AttendingSignup is one row from ListAttendingForEvent: a person who said they are
 // turning up, with the role they were assigned if the comp has been locked and they
 // hold a seat in it.
@@ -35,6 +49,7 @@ type reminderStore interface {
 
 	ClaimDueJobs(ctx context.Context, limit int32) ([]db.ScheduledJob, error)
 	MarkJobSent(ctx context.Context, id uuid.UUID) error
+	MarkJobSkipped(ctx context.Context, id uuid.UUID, reason string) error
 	MarkJobFailed(ctx context.Context, id uuid.UUID, status db.JobStatus) error
 
 	GetEvent(ctx context.Context, id uuid.UUID) (Event, error)
@@ -83,8 +98,12 @@ func (r *Runner) RunDue(ctx context.Context, limit int32) error {
 // records a failed attempt on it. The returned error is infrastructure-class only:
 // a business-level outcome (nothing to notify, no channel to post in, a resolution
 // error) is fully handled here and never bubbles up to abort the tick.
+//
+// A job that wrote nothing is still done, but it is marked with the reason rather than
+// as a plain send: "SENT" on a job that reminded nobody is what let a broken reminder
+// look healthy.
 func (r *Runner) resolve(ctx context.Context, tx reminderStore, job db.ScheduledJob) error {
-	notifications, skip, err := r.buildNotifications(ctx, tx, job)
+	notifications, reason, err := r.buildNotifications(ctx, tx, job)
 	if err != nil {
 		r.logger.ErrorContext(ctx, "resolving job", "job_id", job.ID, "job_type", job.JobType, "error", err)
 
@@ -98,13 +117,24 @@ func (r *Runner) resolve(ctx context.Context, tx reminderStore, job db.Scheduled
 		return nil
 	}
 
-	if !skip {
-		for _, n := range notifications {
-			if err := tx.InsertNotification(ctx, n); err != nil {
-				return fmt.Errorf("inserting notification: %w", err)
-			}
+	if reason != "" {
+		r.logger.InfoContext(ctx, "job notified nobody",
+			"job_id", job.ID, "job_type", job.JobType, "event_id", job.EventID, "reason", reason)
+		if err := tx.MarkJobSkipped(ctx, job.ID, reason); err != nil {
+			return fmt.Errorf("marking job skipped: %w", err)
+		}
+		return nil
+	}
+
+	for _, n := range notifications {
+		if err := tx.InsertNotification(ctx, n); err != nil {
+			return fmt.Errorf("inserting notification: %w", err)
 		}
 	}
+
+	r.logger.InfoContext(ctx, "job queued notifications",
+		"job_id", job.ID, "job_type", job.JobType, "event_id", job.EventID,
+		"notifications", len(notifications))
 
 	if err := tx.MarkJobSent(ctx, job.ID); err != nil {
 		return fmt.Errorf("marking job sent: %w", err)
@@ -112,13 +142,13 @@ func (r *Runner) resolve(ctx context.Context, tx reminderStore, job db.Scheduled
 	return nil
 }
 
-// buildNotifications resolves recipients and payloads for one job. skip means the
-// job is done (marked SENT) without writing anything: a ROLE job with no channel_id to
-// post in, or a job of a kind that is no longer sent.
-func (r *Runner) buildNotifications(ctx context.Context, tx reminderStore, job db.ScheduledJob) (notifications []Notification, skip bool, err error) {
+// buildNotifications resolves recipients and payloads for one job. A non-empty reason
+// means the job is done without writing anything: a job with no channel_id to post in,
+// nobody to tell, or a kind that is no longer sent.
+func (r *Runner) buildNotifications(ctx context.Context, tx reminderStore, job db.ScheduledJob) (notifications []Notification, reason string, err error) {
 	event, err := tx.GetEvent(ctx, job.EventID)
 	if err != nil {
-		return nil, false, fmt.Errorf("loading event: %w", err)
+		return nil, "", fmt.Errorf("loading event: %w", err)
 	}
 
 	switch job.JobType {
@@ -131,9 +161,9 @@ func (r *Runner) buildNotifications(ctx context.Context, tx reminderStore, job d
 	// Nothing nags about an unlocked comp any more. Rows scheduled by an older release
 	// are still in the table, so they are drained rather than left to fail three times.
 	case db.JobEnumCOMPNAG:
-		return nil, true, nil
+		return nil, skipKindRetired, nil
 	default:
-		return nil, false, fmt.Errorf("unknown job type %q", job.JobType)
+		return nil, "", fmt.Errorf("unknown job type %q", job.JobType)
 	}
 }
 
@@ -146,17 +176,21 @@ type reminder24hPayload struct {
 // buildReminder24h DMs whoever has not answered. ListUndecidedForEvent already
 // groups by discord_id, not by character, so a raider with four unsigned alts gets
 // one row here, not four.
-func (r *Runner) buildReminder24h(ctx context.Context, tx reminderStore, event Event) ([]Notification, bool, error) {
+func (r *Runner) buildReminder24h(ctx context.Context, tx reminderStore, event Event) ([]Notification, string, error) {
 	discordIDs, err := tx.ListUndecidedForEvent(ctx, event.ID)
 	if err != nil {
-		return nil, false, fmt.Errorf("listing undecided: %w", err)
+		return nil, "", fmt.Errorf("listing undecided: %w", err)
 	}
 
 	payload, err := json.Marshal(reminder24hPayload{
 		Title: event.Title, StartsAt: event.StartsAt, Deadline: event.SignupDeadline,
 	})
 	if err != nil {
-		return nil, false, fmt.Errorf("encoding payload: %w", err)
+		return nil, "", fmt.Errorf("encoding payload: %w", err)
+	}
+
+	if len(discordIDs) == 0 {
+		return nil, skipNoRecipients, nil
 	}
 
 	notifications := make([]Notification, len(discordIDs))
@@ -170,7 +204,7 @@ func (r *Runner) buildReminder24h(ctx context.Context, tx reminderStore, event E
 			Payload:        payload,
 		}
 	}
-	return notifications, false, nil
+	return notifications, "", nil
 }
 
 // reminderPreEventPingPayload is the body of the channel ping. The mentions themselves
@@ -197,18 +231,18 @@ type reminderPreEventDMPayload struct {
 // The guild chooses how it arrives. A PING is one message in the events channel that
 // mentions them all, which is what a raider actually sees ten minutes before an invite;
 // DM is one message each, and carries the assigned role when there is one.
-func (r *Runner) buildReminderPreEvent(ctx context.Context, tx reminderStore, event Event) ([]Notification, bool, error) {
+func (r *Runner) buildReminderPreEvent(ctx context.Context, tx reminderStore, event Event) ([]Notification, string, error) {
 	rows, err := tx.ListAttendingForEvent(ctx, event.ID)
 	if err != nil {
-		return nil, false, fmt.Errorf("listing attending: %w", err)
+		return nil, "", fmt.Errorf("listing attending: %w", err)
 	}
 	if len(rows) == 0 {
-		return nil, true, nil
+		return nil, skipNoRecipients, nil
 	}
 
 	settings, err := tx.GuildSettings(ctx, event.DiscordGuildID)
 	if err != nil {
-		return nil, false, fmt.Errorf("reading guild settings: %w", err)
+		return nil, "", fmt.Errorf("reading guild settings: %w", err)
 	}
 	delivery := settings.Delivery()
 
@@ -222,7 +256,7 @@ func (r *Runner) buildReminderPreEvent(ctx context.Context, tx reminderStore, ev
 				Title: event.Title, StartsAt: event.StartsAt, MessageID: event.MessageID,
 			})
 			if err != nil {
-				return nil, false, fmt.Errorf("encoding payload: %w", err)
+				return nil, "", fmt.Errorf("encoding payload: %w", err)
 			}
 
 			mentions := make([]int64, len(rows))
@@ -247,7 +281,7 @@ func (r *Runner) buildReminderPreEvent(ctx context.Context, tx reminderStore, ev
 				Title: event.Title, StartsAt: event.StartsAt, AssignedRole: row.AssignedRole,
 			})
 			if err != nil {
-				return nil, false, fmt.Errorf("encoding payload: %w", err)
+				return nil, "", fmt.Errorf("encoding payload: %w", err)
 			}
 
 			discordID := row.DiscordID
@@ -262,7 +296,12 @@ func (r *Runner) buildReminderPreEvent(ctx context.Context, tx reminderStore, ev
 		}
 	}
 
-	return notifications, len(notifications) == 0, nil
+	// Empty only when PING is the whole delivery and the event has no channel: the
+	// warning above says so, and the reason makes the job say so too.
+	if len(notifications) == 0 {
+		return nil, skipNoChannel, nil
+	}
+	return notifications, "", nil
 }
 
 type signupDeadlinePayload struct {
@@ -273,15 +312,15 @@ type signupDeadlinePayload struct {
 // buildSignupDeadline pings the raid lead with signup counts by status. Signups
 // themselves are already read-only past the deadline, since the deadline gate reads
 // events.signup_deadline directly; this job only notifies.
-func (r *Runner) buildSignupDeadline(ctx context.Context, tx reminderStore, event Event) ([]Notification, bool, error) {
+func (r *Runner) buildSignupDeadline(ctx context.Context, tx reminderStore, event Event) ([]Notification, string, error) {
 	if event.ChannelID == nil {
 		r.logger.WarnContext(ctx, "SIGNUP_DEADLINE has no channel to post in", "event_id", event.ID)
-		return nil, true, nil
+		return nil, skipNoChannel, nil
 	}
 
 	signups, err := tx.ListSignupsForEvent(ctx, event.ID)
 	if err != nil {
-		return nil, false, fmt.Errorf("listing signups: %w", err)
+		return nil, "", fmt.Errorf("listing signups: %w", err)
 	}
 	// Seeded with every status rather than only the ones present, so the bot can
 	// render "0 absent" without knowing the enum itself.
@@ -296,11 +335,11 @@ func (r *Runner) buildSignupDeadline(ctx context.Context, tx reminderStore, even
 
 	roleIDs, err := tx.RaidLeadRoleIDs(ctx, event.DiscordGuildID)
 	if err != nil {
-		return nil, false, fmt.Errorf("loading raid lead roles: %w", err)
+		return nil, "", fmt.Errorf("loading raid lead roles: %w", err)
 	}
 	payload, err := json.Marshal(signupDeadlinePayload{Title: event.Title, Counts: counts})
 	if err != nil {
-		return nil, false, fmt.Errorf("encoding payload: %w", err)
+		return nil, "", fmt.Errorf("encoding payload: %w", err)
 	}
 
 	return []Notification{{
@@ -311,5 +350,5 @@ func (r *Runner) buildSignupDeadline(ctx context.Context, tx reminderStore, even
 		RoleIDs:        roleIDs,
 		ChannelID:      event.ChannelID,
 		Payload:        payload,
-	}}, false, nil
+	}}, "", nil
 }

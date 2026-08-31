@@ -47,7 +47,7 @@ SELECT
         AND NOT EXISTS (
             SELECT 1 FROM characters x WHERE x.user_id = $2 AND x.is_main
         )
-RETURNING id, user_id, name, realm, class, spec, ilvl, mplus_score, last_synced, is_main, region, sync_attempted_at, enchants_missing, enchants_expected, tier_pieces, raid_slug, raid_bosses, raid_normal_killed, raid_heroic_killed, raid_mythic_killed
+RETURNING id, user_id, name, realm, class, spec, ilvl, mplus_score, last_synced, is_main, region, sync_attempted_at, enchants_missing, enchants_expected, tier_pieces, raid_slug, raid_bosses, raid_normal_killed, raid_heroic_killed, raid_mythic_killed, archived_at, not_found_since
 `
 
 type CreateCharacterParams struct {
@@ -95,6 +95,8 @@ func (q *Queries) CreateCharacter(ctx context.Context, arg CreateCharacterParams
 		&i.RaidNormalKilled,
 		&i.RaidHeroicKilled,
 		&i.RaidMythicKilled,
+		&i.ArchivedAt,
+		&i.NotFoundSince,
 	)
 	return i, err
 }
@@ -132,7 +134,7 @@ func (q *Queries) DeleteCharacterRoles(ctx context.Context, characterID uuid.UUI
 }
 
 const getCharacterInGuild = `-- name: GetCharacterInGuild :one
-SELECT c.id, c.user_id, c.name, c.realm, c.class, c.spec, c.ilvl, c.mplus_score, c.last_synced, c.is_main, c.region, c.sync_attempted_at, c.enchants_missing, c.enchants_expected, c.tier_pieces, c.raid_slug, c.raid_bosses, c.raid_normal_killed, c.raid_heroic_killed, c.raid_mythic_killed FROM characters c
+SELECT c.id, c.user_id, c.name, c.realm, c.class, c.spec, c.ilvl, c.mplus_score, c.last_synced, c.is_main, c.region, c.sync_attempted_at, c.enchants_missing, c.enchants_expected, c.tier_pieces, c.raid_slug, c.raid_bosses, c.raid_normal_killed, c.raid_heroic_killed, c.raid_mythic_killed, c.archived_at, c.not_found_since FROM characters c
 JOIN users u ON u.id = c.user_id
 WHERE c.id = $1 AND u.discord_guild_id = $2
 `
@@ -166,6 +168,8 @@ func (q *Queries) GetCharacterInGuild(ctx context.Context, arg GetCharacterInGui
 		&i.RaidNormalKilled,
 		&i.RaidHeroicKilled,
 		&i.RaidMythicKilled,
+		&i.ArchivedAt,
+		&i.NotFoundSince,
 	)
 	return i, err
 }
@@ -241,7 +245,7 @@ func (q *Queries) ListCharacterRoles(ctx context.Context, characterID uuid.UUID)
 }
 
 const listCharactersByDiscord = `-- name: ListCharactersByDiscord :many
-SELECT c.id, c.user_id, c.name, c.realm, c.class, c.spec, c.ilvl, c.mplus_score, c.last_synced, c.is_main, c.region, c.sync_attempted_at, c.enchants_missing, c.enchants_expected, c.tier_pieces, c.raid_slug, c.raid_bosses, c.raid_normal_killed, c.raid_heroic_killed, c.raid_mythic_killed FROM characters c
+SELECT c.id, c.user_id, c.name, c.realm, c.class, c.spec, c.ilvl, c.mplus_score, c.last_synced, c.is_main, c.region, c.sync_attempted_at, c.enchants_missing, c.enchants_expected, c.tier_pieces, c.raid_slug, c.raid_bosses, c.raid_normal_killed, c.raid_heroic_killed, c.raid_mythic_killed, c.archived_at, c.not_found_since FROM characters c
 JOIN users u ON u.id = c.user_id
 WHERE u.discord_id = $1 AND u.discord_guild_id = $2
 ORDER BY c.name
@@ -282,6 +286,8 @@ func (q *Queries) ListCharactersByDiscord(ctx context.Context, arg ListCharacter
 			&i.RaidNormalKilled,
 			&i.RaidHeroicKilled,
 			&i.RaidMythicKilled,
+			&i.ArchivedAt,
+			&i.NotFoundSince,
 		); err != nil {
 			return nil, err
 		}
@@ -294,7 +300,7 @@ func (q *Queries) ListCharactersByDiscord(ctx context.Context, arg ListCharacter
 }
 
 const listCharactersByUser = `-- name: ListCharactersByUser :many
-SELECT id, user_id, name, realm, class, spec, ilvl, mplus_score, last_synced, is_main, region, sync_attempted_at, enchants_missing, enchants_expected, tier_pieces, raid_slug, raid_bosses, raid_normal_killed, raid_heroic_killed, raid_mythic_killed FROM characters
+SELECT id, user_id, name, realm, class, spec, ilvl, mplus_score, last_synced, is_main, region, sync_attempted_at, enchants_missing, enchants_expected, tier_pieces, raid_slug, raid_bosses, raid_normal_killed, raid_heroic_killed, raid_mythic_killed, archived_at, not_found_since FROM characters
 WHERE user_id = $1
 ORDER BY name
 `
@@ -329,6 +335,8 @@ func (q *Queries) ListCharactersByUser(ctx context.Context, userID uuid.UUID) ([
 			&i.RaidNormalKilled,
 			&i.RaidHeroicKilled,
 			&i.RaidMythicKilled,
+			&i.ArchivedAt,
+			&i.NotFoundSince,
 		); err != nil {
 			return nil, err
 		}
@@ -341,7 +349,7 @@ func (q *Queries) ListCharactersByUser(ctx context.Context, userID uuid.UUID) ([
 }
 
 const listCharactersDueForSync = `-- name: ListCharactersDueForSync :many
-SELECT id, user_id, name, realm, class, spec, ilvl, mplus_score, last_synced, is_main, region, sync_attempted_at, enchants_missing, enchants_expected, tier_pieces, raid_slug, raid_bosses, raid_normal_killed, raid_heroic_killed, raid_mythic_killed FROM characters
+SELECT id, user_id, name, realm, class, spec, ilvl, mplus_score, last_synced, is_main, region, sync_attempted_at, enchants_missing, enchants_expected, tier_pieces, raid_slug, raid_bosses, raid_normal_killed, raid_heroic_killed, raid_mythic_killed, archived_at, not_found_since FROM characters
 WHERE (last_synced IS NULL OR last_synced < $1)
   AND (sync_attempted_at IS NULL OR sync_attempted_at < $1)
 ORDER BY sync_attempted_at ASC NULLS FIRST
@@ -387,6 +395,8 @@ func (q *Queries) ListCharactersDueForSync(ctx context.Context, arg ListCharacte
 			&i.RaidNormalKilled,
 			&i.RaidHeroicKilled,
 			&i.RaidMythicKilled,
+			&i.ArchivedAt,
+			&i.NotFoundSince,
 		); err != nil {
 			return nil, err
 		}
@@ -399,14 +409,23 @@ func (q *Queries) ListCharactersDueForSync(ctx context.Context, arg ListCharacte
 }
 
 const listCharactersInGuild = `-- name: ListCharactersInGuild :many
-SELECT c.id, c.user_id, c.name, c.realm, c.class, c.spec, c.ilvl, c.mplus_score, c.last_synced, c.is_main, c.region, c.sync_attempted_at, c.enchants_missing, c.enchants_expected, c.tier_pieces, c.raid_slug, c.raid_bosses, c.raid_normal_killed, c.raid_heroic_killed, c.raid_mythic_killed FROM characters c
+SELECT c.id, c.user_id, c.name, c.realm, c.class, c.spec, c.ilvl, c.mplus_score, c.last_synced, c.is_main, c.region, c.sync_attempted_at, c.enchants_missing, c.enchants_expected, c.tier_pieces, c.raid_slug, c.raid_bosses, c.raid_normal_killed, c.raid_heroic_killed, c.raid_mythic_killed, c.archived_at, c.not_found_since FROM characters c
 JOIN users u ON u.id = c.user_id
 WHERE u.discord_guild_id = $1
+  AND ($2::boolean OR c.archived_at IS NULL)
 ORDER BY c.name
 `
 
-func (q *Queries) ListCharactersInGuild(ctx context.Context, discordGuildID int64) ([]Character, error) {
-	rows, err := q.db.Query(ctx, listCharactersInGuild, discordGuildID)
+type ListCharactersInGuildParams struct {
+	DiscordGuildID  int64
+	IncludeArchived bool
+}
+
+// The archived are off the roster by default and readable on request, never gone: the
+// signup, comp and analysis reads join characters directly and must keep seeing them,
+// or a leaver takes their own raid history with them.
+func (q *Queries) ListCharactersInGuild(ctx context.Context, arg ListCharactersInGuildParams) ([]Character, error) {
+	rows, err := q.db.Query(ctx, listCharactersInGuild, arg.DiscordGuildID, arg.IncludeArchived)
 	if err != nil {
 		return nil, err
 	}
@@ -435,6 +454,8 @@ func (q *Queries) ListCharactersInGuild(ctx context.Context, discordGuildID int6
 			&i.RaidNormalKilled,
 			&i.RaidHeroicKilled,
 			&i.RaidMythicKilled,
+			&i.ArchivedAt,
+			&i.NotFoundSince,
 		); err != nil {
 			return nil, err
 		}
@@ -477,6 +498,23 @@ func (q *Queries) ListGuildsForDiscordUser(ctx context.Context, discordID int64)
 	return items, nil
 }
 
+const markCharacterNotFound = `-- name: MarkCharacterNotFound :exec
+UPDATE characters SET
+    sync_attempted_at = now(),
+    not_found_since = COALESCE(not_found_since, now())
+WHERE id = $1
+`
+
+// Raider.IO answered 404. The queue moves on and the stored numbers stay put, because
+// they are the last true thing known about this character, but the row now says since
+// when nobody has been able to confirm them. COALESCE keeps the first sighting: the
+// date a raid lead reads is when the character went missing, not when it was last
+// looked for.
+func (q *Queries) MarkCharacterNotFound(ctx context.Context, id uuid.UUID) error {
+	_, err := q.db.Exec(ctx, markCharacterNotFound, id)
+	return err
+}
+
 const markCharacterSyncAttempted = `-- name: MarkCharacterSyncAttempted :exec
 UPDATE characters SET sync_attempted_at = now()
 WHERE id = $1
@@ -487,6 +525,31 @@ WHERE id = $1
 func (q *Queries) MarkCharacterSyncAttempted(ctx context.Context, id uuid.UUID) error {
 	_, err := q.db.Exec(ctx, markCharacterSyncAttempted, id)
 	return err
+}
+
+const setCharacterArchived = `-- name: SetCharacterArchived :execrows
+UPDATE characters c SET archived_at = CASE
+    WHEN NOT $1::boolean THEN NULL
+    ELSE COALESCE(c.archived_at, now())
+END
+FROM users u
+WHERE c.user_id = u.id AND c.id = $2 AND u.discord_guild_id = $3
+`
+
+type SetCharacterArchivedParams struct {
+	Archived       bool
+	ID             uuid.UUID
+	DiscordGuildID int64
+}
+
+// Guild-scoped, and idempotent on the way in: re-archiving keeps the date the raider
+// actually left rather than stamping today over it. Un-archiving clears it outright.
+func (q *Queries) SetCharacterArchived(ctx context.Context, arg SetCharacterArchivedParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setCharacterArchived, arg.Archived, arg.ID, arg.DiscordGuildID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const setCharacterMain = `-- name: SetCharacterMain :execrows
@@ -530,10 +593,12 @@ func (q *Queries) SetCharacterRole(ctx context.Context, arg SetCharacterRolePara
 }
 
 const touchCharacterSynced = `-- name: TouchCharacterSynced :exec
-UPDATE characters SET last_synced = now(), sync_attempted_at = now()
+UPDATE characters SET last_synced = now(), sync_attempted_at = now(), not_found_since = NULL
 WHERE id = $1
 `
 
+// A fetch that found the character and changed nothing. Clears not_found_since, so a
+// raider who came back from a rename stops reading as missing.
 func (q *Queries) TouchCharacterSynced(ctx context.Context, id uuid.UUID) error {
 	_, err := q.db.Exec(ctx, touchCharacterSynced, id)
 	return err
@@ -554,7 +619,9 @@ UPDATE characters SET
     raid_heroic_killed = $12,
     raid_mythic_killed = $13,
     last_synced = now(),
-    sync_attempted_at = now()
+    sync_attempted_at = now(),
+    -- The fetch found them, so whatever they were missing from, they are back.
+    not_found_since = NULL
 WHERE id = $1
 `
 

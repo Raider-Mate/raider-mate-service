@@ -30,6 +30,10 @@ type eventResponse struct {
 	// WarcraftLogsURL is absent until a raid lead attaches a report. Clients render the
 	// warcraftlogs link rather than building this URL themselves.
 	WarcraftLogsURL *string `json:"warcraftlogs_url,omitempty"`
+	// Reminder is what became of this event's pre-event reminder. Only the single-event
+	// read carries it: it costs a job lookup, and a list of thirty events has nowhere
+	// to show thirty of them.
+	Reminder *reminderResponse `json:"reminder,omitempty"`
 	// SignupCounts is this event's signups tallied by status, every status present even
 	// at zero. Which of them reads as "coming" is the client's to decide from what it is
 	// rendering, so no total is sent: a calendar cell wants confirmed, a raid lead
@@ -40,6 +44,18 @@ type eventResponse struct {
 	// create, could only ever be zeros.
 	SignupCounts map[string]int `json:"signup_counts,omitempty"`
 	Links        Links          `json:"_links"`
+}
+
+// reminderResponse is the pre-event reminder's state, already decided. A client shows
+// what State says; it does not infer it from lead times and timestamps.
+type reminderResponse struct {
+	LeadMinutes int32  `json:"lead_minutes"`
+	Delivery    string `json:"delivery"`
+	// RunsAt is set while the reminder is still SCHEDULED and absent afterwards.
+	RunsAt *time.Time `json:"runs_at,omitempty"`
+	State  string     `json:"state"`
+	// Reason accompanies SKIPPED and names why nobody was told.
+	Reason *string `json:"reason,omitempty"`
 }
 
 // withSignupCounts attaches a tally to a response. Separate from eventToResponse
@@ -55,6 +71,16 @@ func withSignupCounts(resp eventResponse, counts map[db.SignupStatus]int) eventR
 	}
 	resp.SignupCounts = out
 	return resp
+}
+
+func reminderToResponse(s signup.ReminderState) reminderResponse {
+	return reminderResponse{
+		LeadMinutes: s.LeadMinutes,
+		Delivery:    string(s.Delivery),
+		RunsAt:      s.RunsAt,
+		State:       s.State,
+		Reason:      s.Reason,
+	}
 }
 
 func eventToResponse(e signup.Event, actor Actor) eventResponse {
@@ -295,7 +321,18 @@ func getEventHandler(events *signup.Events, logger *slog.Logger) http.HandlerFun
 			return
 		}
 
-		writeJSON(w, logger, http.StatusOK, withSignupCounts(eventToResponse(event, actor), counts[event.ID]))
+		resp := withSignupCounts(eventToResponse(event, actor), counts[event.ID])
+		// The event reads fine without it, so a failed lookup costs the reminder line
+		// and not the page.
+		state, err := events.ReminderState(r.Context(), event)
+		if err != nil {
+			logger.WarnContext(r.Context(), "reading reminder state", "error", err, "event_id", event.ID)
+		} else {
+			reminder := reminderToResponse(state)
+			resp.Reminder = &reminder
+		}
+
+		writeJSON(w, logger, http.StatusOK, resp)
 	}
 }
 

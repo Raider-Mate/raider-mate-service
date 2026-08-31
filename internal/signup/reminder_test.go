@@ -18,6 +18,11 @@ type failedMark struct {
 	status db.JobStatus
 }
 
+type skippedMark struct {
+	id     uuid.UUID
+	reason string
+}
+
 // fakeReminderStore stands in for Postgres for Runner. Transact just invokes fn
 // against itself: no real transaction, but the same call shape a caller sees.
 type fakeReminderStore struct {
@@ -32,6 +37,7 @@ type fakeReminderStore struct {
 
 	notified []Notification
 	sentIDs  []uuid.UUID
+	skipped  []skippedMark
 	failed   []failedMark
 }
 
@@ -45,6 +51,11 @@ func (s *fakeReminderStore) ClaimDueJobs(context.Context, int32) ([]db.Scheduled
 
 func (s *fakeReminderStore) MarkJobSent(_ context.Context, id uuid.UUID) error {
 	s.sentIDs = append(s.sentIDs, id)
+	return nil
+}
+
+func (s *fakeReminderStore) MarkJobSkipped(_ context.Context, id uuid.UUID, reason string) error {
+	s.skipped = append(s.skipped, skippedMark{id: id, reason: reason})
 	return nil
 }
 
@@ -224,8 +235,9 @@ func TestRunDuePreEventBothSendsThePingAndTheDMs(t *testing.T) {
 }
 
 // An event nobody has signed up to has nobody to remind. The job is done, not failed:
-// retrying it three times would not conjure a roster.
-func TestRunDuePreEventWithNobodyAttendingWritesNothingAndCompletes(t *testing.T) {
+// retrying it three times would not conjure a roster. It records why it told nobody,
+// so the row does not read as a reminder that went out.
+func TestRunDuePreEventWithNobodyAttendingRecordsThatItToldNobody(t *testing.T) {
 	jobID := uuid.New()
 	channelID := int64(42)
 	store := &fakeReminderStore{
@@ -240,18 +252,24 @@ func TestRunDuePreEventWithNobodyAttendingWritesNothingAndCompletes(t *testing.T
 	if len(store.notified) != 0 {
 		t.Errorf("notified = %d, want 0", len(store.notified))
 	}
-	if len(store.sentIDs) != 1 || store.sentIDs[0] != jobID {
-		t.Errorf("sent = %v, want [%s]", store.sentIDs, jobID)
+	if len(store.sentIDs) != 0 {
+		t.Errorf("sent = %v, want none: a job that told nobody did not send", store.sentIDs)
+	}
+	if len(store.skipped) != 1 || store.skipped[0].id != jobID || store.skipped[0].reason != skipNoRecipients {
+		t.Errorf("skipped = %+v, want [{%s %s}]", store.skipped, jobID, skipNoRecipients)
 	}
 }
 
 // The bot posts the event message after the event exists, so an event can reach its
 // reminder with no channel on file. There is nowhere to ping, and inventing one is
-// worse than saying nothing.
-func TestRunDuePreEventPingWithNoChannelWritesNothing(t *testing.T) {
+// worse than saying nothing. What it must not do is record a send: a reminder that
+// reached nobody looked exactly like one that reached the raid, which is how this went
+// unnoticed in the first place.
+func TestRunDuePreEventPingWithNoChannelRecordsWhyItToldNobody(t *testing.T) {
+	jobID := uuid.New()
 	store := &fakeReminderStore{
 		event:     Event{Title: "Prog Night"},
-		jobs:      []db.ScheduledJob{{ID: uuid.New(), JobType: db.JobEnumREMINDERPREEVENT}},
+		jobs:      []db.ScheduledJob{{ID: jobID, JobType: db.JobEnumREMINDERPREEVENT}},
 		attending: []AttendingSignup{{DiscordID: 1}},
 	}
 
@@ -261,6 +279,37 @@ func TestRunDuePreEventPingWithNoChannelWritesNothing(t *testing.T) {
 
 	if len(store.notified) != 0 {
 		t.Errorf("notified = %d, want 0", len(store.notified))
+	}
+	if len(store.sentIDs) != 0 {
+		t.Errorf("sent = %v, want none: nothing was sent", store.sentIDs)
+	}
+	if len(store.skipped) != 1 || store.skipped[0].id != jobID || store.skipped[0].reason != skipNoChannel {
+		t.Errorf("skipped = %+v, want [{%s %s}]", store.skipped, jobID, skipNoChannel)
+	}
+}
+
+// The ordinary case, asserted so the reason cannot creep onto a job that did its work.
+func TestRunDuePreEventPingRecordsNoSkipReason(t *testing.T) {
+	jobID := uuid.New()
+	channelID := int64(42)
+	store := &fakeReminderStore{
+		event:     Event{Title: "Prog Night", ChannelID: &channelID},
+		jobs:      []db.ScheduledJob{{ID: jobID, JobType: db.JobEnumREMINDERPREEVENT}},
+		attending: []AttendingSignup{{DiscordID: 1}},
+	}
+
+	if err := NewRunner(store, newTestLogger()).RunDue(context.Background(), 10); err != nil {
+		t.Fatalf("RunDue: %v", err)
+	}
+
+	if len(store.notified) != 1 {
+		t.Fatalf("notified = %d, want 1", len(store.notified))
+	}
+	if len(store.skipped) != 0 {
+		t.Errorf("skipped = %+v, want none: the ping went out", store.skipped)
+	}
+	if len(store.sentIDs) != 1 || store.sentIDs[0] != jobID {
+		t.Errorf("sent = %v, want [%s]", store.sentIDs, jobID)
 	}
 }
 
@@ -325,12 +374,12 @@ func TestRunDueDrainsAnOldCompNagWithoutNotifying(t *testing.T) {
 	if len(store.failed) != 0 {
 		t.Errorf("failed = %+v, want none: the job completes", store.failed)
 	}
-	if len(store.sentIDs) != 1 || store.sentIDs[0] != jobID {
-		t.Errorf("sent = %v, want [%s]", store.sentIDs, jobID)
+	if len(store.skipped) != 1 || store.skipped[0].id != jobID || store.skipped[0].reason != skipKindRetired {
+		t.Errorf("skipped = %+v, want [{%s %s}]", store.skipped, jobID, skipKindRetired)
 	}
 }
 
-func TestRunDueRoleJobWithNoChannelIsMarkedSentNotRetried(t *testing.T) {
+func TestRunDueRoleJobWithNoChannelIsRecordedSkippedNotRetried(t *testing.T) {
 	jobID := uuid.New()
 	store := &fakeReminderStore{
 		event: Event{Title: "Prog Night", ChannelID: nil, DiscordGuildID: 100},
@@ -347,8 +396,8 @@ func TestRunDueRoleJobWithNoChannelIsMarkedSentNotRetried(t *testing.T) {
 	if len(store.failed) != 0 {
 		t.Errorf("failed = %v, want none: a missing channel is not retried", store.failed)
 	}
-	if len(store.sentIDs) != 1 || store.sentIDs[0] != jobID {
-		t.Errorf("sent = %v, want [%s]", store.sentIDs, jobID)
+	if len(store.skipped) != 1 || store.skipped[0].id != jobID || store.skipped[0].reason != skipNoChannel {
+		t.Errorf("skipped = %+v, want [{%s %s}]", store.skipped, jobID, skipNoChannel)
 	}
 }
 
