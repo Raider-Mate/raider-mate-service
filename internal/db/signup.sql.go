@@ -23,6 +23,47 @@ func (q *Queries) CountCompSlotsForEvent(ctx context.Context, eventID uuid.UUID)
 	return count, err
 }
 
+const countSignupsByStatusForEvents = `-- name: CountSignupsByStatusForEvents :many
+SELECT event_id, status, count(*) AS total
+FROM signups
+WHERE event_id = ANY($1::uuid[])
+GROUP BY event_id, status
+`
+
+type CountSignupsByStatusForEventsRow struct {
+	EventID uuid.UUID
+	Status  SignupStatus
+	Total   int64
+}
+
+// The tally behind an event's signup_counts, for a whole guild's list in one query.
+// Grouped in SQL rather than by reading every signup row and counting in Go: a month
+// of raid nights is a request per event otherwise, each one dragging back full signup
+// rows in order to learn how many there are.
+//
+// Only statuses actually present come back. Seeding the absent ones at zero is the
+// caller's job, because the enum lives in Go and a client rendering "0 absent" needs
+// the key present.
+func (q *Queries) CountSignupsByStatusForEvents(ctx context.Context, eventIds []uuid.UUID) ([]CountSignupsByStatusForEventsRow, error) {
+	rows, err := q.db.Query(ctx, countSignupsByStatusForEvents, eventIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []CountSignupsByStatusForEventsRow
+	for rows.Next() {
+		var i CountSignupsByStatusForEventsRow
+		if err := rows.Scan(&i.EventID, &i.Status, &i.Total); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const createEvent = `-- name: CreateEvent :one
 INSERT INTO events (id, discord_guild_id, type, title, starts_at, signup_deadline, comp_template, message_id, channel_id, difficulty, reminder_lead_minutes)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)

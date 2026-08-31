@@ -387,3 +387,60 @@ func (f *fakeCharacterStore) ListGuildsForDiscordUser(_ context.Context, discord
 	f.askedAbout = discordID
 	return f.guilds, nil
 }
+
+// Zero and "not established" are different answers, and JSON has one obvious way to
+// get them confused. A raider who enchanted nothing is 0 of 8; a season the worker has
+// no rules for is no field at all. omitempty drops a nil pointer and keeps a pointer
+// to zero, which is the whole reason these are pointers.
+func TestCharacterResponseTellsZeroApartFromUnknown(t *testing.T) {
+	none := 0
+	character := roster.Character{
+		ID:              uuid.New(),
+		Name:            "Thrall",
+		EnchantsMissing: &none,
+		TierPieces:      &none,
+	}
+
+	body, err := json.Marshal(characterToResponse(character, true, false))
+	if err != nil {
+		t.Fatalf("marshalling: %v", err)
+	}
+	got := string(body)
+
+	if !strings.Contains(got, `"enchants_missing":0`) {
+		t.Errorf("body = %s, want enchants_missing present at 0", got)
+	}
+	if !strings.Contains(got, `"tier_pieces":0`) {
+		t.Errorf("body = %s, want tier_pieces present at 0", got)
+	}
+	// Never counted, so never claimed. EnchantsExpected was left nil above.
+	if strings.Contains(got, "enchants_expected") {
+		t.Errorf("body = %s, want an unestablished count left out entirely", got)
+	}
+	if strings.Contains(got, "progression") {
+		t.Errorf("body = %s, want no progression for a character who has not raided", got)
+	}
+}
+
+func TestCharacterResponseCarriesTheRaidSlugWithItsCounts(t *testing.T) {
+	character := roster.Character{
+		ID:   uuid.New(),
+		Name: "Thrall",
+		Progression: &roster.RaidProgress{
+			Slug: "liberation-of-undermine", Bosses: 8, NormalKilled: 8, HeroicKilled: 6, MythicKilled: 2,
+		},
+	}
+
+	got := characterToResponse(character, true, false).Progression
+	if got == nil {
+		t.Fatal("progression is absent, want the tracked raid")
+	}
+	// The slug travels with the numbers so a client never guesses which tier they
+	// describe, and a row left over from last tier is obvious rather than wrong.
+	if got.Raid != "liberation-of-undermine" {
+		t.Errorf("raid = %q, want liberation-of-undermine", got.Raid)
+	}
+	if got.Bosses != 8 || got.Normal != 8 || got.Heroic != 6 || got.Mythic != 2 {
+		t.Errorf("counts = %+v, want 8/8/6/2", got)
+	}
+}

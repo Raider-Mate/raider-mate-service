@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -46,6 +47,51 @@ func TestCharacterProfileParsesFields(t *testing.T) {
 	}
 	if profile.Gear[0].Slot != "head" || profile.Gear[1].Slot != "neck" {
 		t.Errorf("Gear not sorted by slot: %+v", profile.Gear)
+	}
+
+	// Sorted by slug, not in document order: the syncer compares two profiles to decide
+	// whether a write is a no-op, and Go's map order would make that a coin flip.
+	want := []RaidProgress{
+		{Slug: "liberation-of-undermine", Bosses: 8, NormalKilled: 8, HeroicKilled: 6, MythicKilled: 2},
+		{Slug: "nerubar-palace", Bosses: 8, NormalKilled: 8, HeroicKilled: 0, MythicKilled: 0},
+	}
+	if !slices.Equal(profile.Progression, want) {
+		t.Errorf("Progression = %+v, want %+v", profile.Progression, want)
+	}
+}
+
+func TestCharacterProfileRequestsRaidProgression(t *testing.T) {
+	var gotFields string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotFields = r.URL.Query().Get("fields")
+		w.Write([]byte(`{}`)) //nolint:errcheck
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL, "", 0)
+	if _, err := c.CharacterProfile(context.Background(), "eu", "ravencrest", "Danthrax"); err != nil {
+		t.Fatalf("CharacterProfile: %v", err)
+	}
+	// Raider.IO returns only what it is asked for, so a missing field here reads as a
+	// character who has never raided rather than as a request that forgot to ask.
+	if !strings.Contains(gotFields, "raid_progression") {
+		t.Errorf("fields = %q, want it to request raid_progression", gotFields)
+	}
+}
+
+func TestCharacterProfileWithoutProgression(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"class":"Warrior"}`)) //nolint:errcheck
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL, "", 0)
+	profile, err := c.CharacterProfile(context.Background(), "eu", "ravencrest", "Danthrax")
+	if err != nil {
+		t.Fatalf("CharacterProfile: %v", err)
+	}
+	if len(profile.Progression) != 0 {
+		t.Errorf("Progression = %+v, want empty", profile.Progression)
 	}
 }
 

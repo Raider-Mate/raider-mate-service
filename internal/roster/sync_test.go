@@ -138,7 +138,7 @@ func TestSyncDueUnchangedProfileTouchesOnly(t *testing.T) {
 		return profile, nil
 	})
 
-	s := NewSyncer(fetcher, store, testLogger())
+	s := NewSyncer(fetcher, store, GearRules{}, testLogger())
 	if err := s.SyncDue(context.Background(), time.Hour, 10); err != nil {
 		t.Fatalf("SyncDue: %v", err)
 	}
@@ -164,7 +164,7 @@ func TestSyncDueChangedIlvlWritesSnapshot(t *testing.T) {
 		return profile, nil
 	})
 
-	s := NewSyncer(fetcher, store, testLogger())
+	s := NewSyncer(fetcher, store, GearRules{}, testLogger())
 	if err := s.SyncDue(context.Background(), time.Hour, 10); err != nil {
 		t.Fatalf("SyncDue: %v", err)
 	}
@@ -188,7 +188,7 @@ func TestSyncDueFirstSyncWritesSnapshot(t *testing.T) {
 		return profile, nil
 	})
 
-	s := NewSyncer(fetcher, store, testLogger())
+	s := NewSyncer(fetcher, store, GearRules{}, testLogger())
 	if err := s.SyncDue(context.Background(), time.Hour, 10); err != nil {
 		t.Fatalf("SyncDue: %v", err)
 	}
@@ -205,7 +205,7 @@ func TestSyncDueCharacterNotFoundTouchesWithoutError(t *testing.T) {
 		return raiderio.Profile{}, raiderio.ErrCharacterNotFound
 	})
 
-	s := NewSyncer(fetcher, store, testLogger())
+	s := NewSyncer(fetcher, store, GearRules{}, testLogger())
 	if err := s.SyncDue(context.Background(), time.Hour, 10); err != nil {
 		t.Fatalf("SyncDue: %v", err)
 	}
@@ -236,7 +236,7 @@ func TestSyncDueOneFailureDoesNotAbortBatch(t *testing.T) {
 		return profile, nil
 	})
 
-	s := NewSyncer(fetcher, store, testLogger())
+	s := NewSyncer(fetcher, store, GearRules{}, testLogger())
 	if err := s.SyncDue(context.Background(), time.Hour, 10); err != nil {
 		t.Fatalf("SyncDue: %v", err)
 	}
@@ -266,7 +266,7 @@ func TestSyncDueRespecWritesSnapshot(t *testing.T) {
 		return profile, nil
 	})
 
-	s := NewSyncer(fetcher, store, testLogger())
+	s := NewSyncer(fetcher, store, GearRules{}, testLogger())
 	if err := s.SyncDue(context.Background(), time.Hour, 10); err != nil {
 		t.Fatalf("SyncDue: %v", err)
 	}
@@ -293,7 +293,7 @@ func TestSyncDueChangedGearWritesSnapshot(t *testing.T) {
 		return profile, nil
 	})
 
-	s := NewSyncer(fetcher, store, testLogger())
+	s := NewSyncer(fetcher, store, GearRules{}, testLogger())
 	if err := s.SyncDue(context.Background(), time.Hour, 10); err != nil {
 		t.Fatalf("SyncDue: %v", err)
 	}
@@ -318,7 +318,7 @@ func TestSyncDueMissingClassKeepsStoredValue(t *testing.T) {
 		return profile, nil
 	})
 
-	s := NewSyncer(fetcher, store, testLogger())
+	s := NewSyncer(fetcher, store, GearRules{}, testLogger())
 	if err := s.SyncDue(context.Background(), time.Hour, 10); err != nil {
 		t.Fatalf("SyncDue: %v", err)
 	}
@@ -343,7 +343,7 @@ func TestSyncDueRateLimitedAbortsBatch(t *testing.T) {
 		return raiderio.Profile{}, raiderio.ErrRateLimited
 	})
 
-	s := NewSyncer(fetcher, store, testLogger())
+	s := NewSyncer(fetcher, store, GearRules{}, testLogger())
 	err := s.SyncDue(context.Background(), time.Hour, 10)
 	if !errors.Is(err, raiderio.ErrRateLimited) {
 		t.Fatalf("err = %v, want ErrRateLimited", err)
@@ -372,7 +372,7 @@ func TestSyncDueInvalidAPIKeyAbortsBatch(t *testing.T) {
 		return raiderio.Profile{}, raiderio.ErrInvalidAPIKey
 	})
 
-	s := NewSyncer(fetcher, store, testLogger())
+	s := NewSyncer(fetcher, store, GearRules{}, testLogger())
 	err := s.SyncDue(context.Background(), time.Hour, 10)
 	if !errors.Is(err, raiderio.ErrInvalidAPIKey) {
 		t.Fatalf("err = %v, want ErrInvalidAPIKey", err)
@@ -395,7 +395,7 @@ func TestSyncDueInvalidRequestDoesNotTouch(t *testing.T) {
 		return raiderio.Profile{}, raiderio.ErrInvalidRequest
 	})
 
-	s := NewSyncer(fetcher, store, testLogger())
+	s := NewSyncer(fetcher, store, GearRules{}, testLogger())
 	if err := s.SyncDue(context.Background(), time.Hour, 10); err != nil {
 		t.Fatalf("SyncDue: %v", err)
 	}

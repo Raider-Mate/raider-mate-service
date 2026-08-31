@@ -29,7 +29,19 @@ type applySyncParams struct {
 	characterID uuid.UUID
 	profile     raiderio.Profile
 	gearJSON    []byte
+	detail      gearDetail
 	changed     bool
+}
+
+// gearDetail is what the syncer works out that the profile does not carry: enchant
+// compliance and tier count against this season's rules, and the one raid the roster
+// is measured on. Every field is optional, and nil means "not established" rather
+// than zero.
+type gearDetail struct {
+	enchantsMissing  *int16
+	enchantsExpected *int16
+	tierPieces       *int16
+	raid             *raiderio.RaidProgress
 }
 
 // syncStore is the persistence the syncer needs. Declared here, by the consumer.
@@ -45,12 +57,14 @@ type syncStore interface {
 type Syncer struct {
 	fetcher profileFetcher
 	store   syncStore
+	rules   GearRules
 	logger  *slog.Logger
 }
 
-// NewSyncer builds a Syncer.
-func NewSyncer(fetcher profileFetcher, store syncStore, logger *slog.Logger) *Syncer {
-	return &Syncer{fetcher: fetcher, store: store, logger: logger}
+// NewSyncer builds a Syncer. rules is the season's game data; a zero value is legal
+// and means tier counting and progression stay unestablished.
+func NewSyncer(fetcher profileFetcher, store syncStore, rules GearRules, logger *slog.Logger) *Syncer {
+	return &Syncer{fetcher: fetcher, store: store, rules: rules, logger: logger}
 }
 
 // SyncDue fetches and writes fresh data for up to limit characters whose
@@ -102,7 +116,9 @@ func (s *Syncer) syncOne(ctx context.Context, c db.Character) error {
 		return fmt.Errorf("marshalling gear: %w", err)
 	}
 
-	unchanged, err := s.unchanged(ctx, c, profile)
+	detail := s.deriveGear(profile)
+
+	unchanged, err := s.unchanged(ctx, c, profile, detail)
 	if err != nil {
 		return fmt.Errorf("comparing against latest snapshot: %w", err)
 	}
@@ -114,14 +130,35 @@ func (s *Syncer) syncOne(ctx context.Context, c db.Character) error {
 		characterID: c.ID,
 		profile:     profile,
 		gearJSON:    gearJSON,
+		detail:      detail,
 		changed:     true,
 	})
+}
+
+// deriveGear reads the season's rules over one profile.
+func (s *Syncer) deriveGear(profile raiderio.Profile) gearDetail {
+	var d gearDetail
+
+	// A profile carrying no gear at all establishes nothing. Writing 0 missing of 0
+	// expected would read as a fully compliant raider rather than as an empty answer.
+	if missing, expected := EnchantCompliance(profile.Gear); expected > 0 {
+		d.enchantsMissing = int16Ptr(missing)
+		d.enchantsExpected = int16Ptr(expected)
+	}
+	if pieces, ok := s.rules.TierPieces(profile.Gear); ok {
+		d.tierPieces = int16Ptr(pieces)
+	}
+	if raid, ok := s.rules.CurrentRaid(profile.Progression); ok {
+		d.raid = &raid
+	}
+
+	return d
 }
 
 // unchanged reports whether a write would be a no-op. Gear and the numbers come
 // from the last snapshot; class and spec live only on the character row, so a
 // re-spec with no gear movement still counts as a change.
-func (s *Syncer) unchanged(ctx context.Context, c db.Character, profile raiderio.Profile) (bool, error) {
+func (s *Syncer) unchanged(ctx context.Context, c db.Character, profile raiderio.Profile, detail gearDetail) (bool, error) {
 	prevGear, prevIlvl, prevScore, found, err := s.store.LatestSnapshotGear(ctx, c.ID)
 	if err != nil {
 		return false, err
@@ -134,6 +171,13 @@ func (s *Syncer) unchanged(ctx context.Context, c db.Character, profile raiderio
 		return false, nil
 	}
 	if !sameString(c.Class, profile.Class) || !sameString(c.Spec, profile.Spec) {
+		return false, nil
+	}
+
+	// Comparing gear alone would miss two things. Progression is not in the snapshot at
+	// all, and a change to the season's rules moves the tier count without a single
+	// item having moved.
+	if !sameDetail(c, detail) {
 		return false, nil
 	}
 
@@ -165,6 +209,40 @@ func sameGear(a, b []raiderio.GearItem) bool {
 			x.EnchantID == y.EnchantID &&
 			slices.Equal(x.GemIDs, y.GemIDs)
 	})
+}
+
+// sameDetail compares the derived columns against what the character row already holds.
+func sameDetail(c db.Character, d gearDetail) bool {
+	return sameInt16(c.EnchantsMissing, d.enchantsMissing) &&
+		sameInt16(c.EnchantsExpected, d.enchantsExpected) &&
+		sameInt16(c.TierPieces, d.tierPieces) &&
+		sameRaid(c, d.raid)
+}
+
+// sameInt16 treats nil as its own value rather than as zero: "no answer" and "none"
+// are different states in every one of these columns.
+func sameInt16(a, b *int16) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return *a == *b
+}
+
+func sameRaid(c db.Character, raid *raiderio.RaidProgress) bool {
+	if raid == nil {
+		return c.RaidSlug == nil
+	}
+	return c.RaidSlug != nil &&
+		*c.RaidSlug == raid.Slug &&
+		sameInt16(c.RaidBosses, int16Ptr(raid.Bosses)) &&
+		sameInt16(c.RaidNormalKilled, int16Ptr(raid.NormalKilled)) &&
+		sameInt16(c.RaidHeroicKilled, int16Ptr(raid.HeroicKilled)) &&
+		sameInt16(c.RaidMythicKilled, int16Ptr(raid.MythicKilled))
+}
+
+func int16Ptr(n int) *int16 {
+	v := int16(n)
+	return &v
 }
 
 // numeric renders a float64 as the decimal string pgtype.Numeric.Scan expects.

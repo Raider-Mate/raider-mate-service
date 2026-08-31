@@ -4,7 +4,10 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
+
+	"github.com/Raider-Mate/raider-mate-service/internal/roster"
 )
 
 // Config holds the values the worker reads from the environment at startup.
@@ -19,6 +22,10 @@ type Config struct {
 	RaiderIOMinInterval time.Duration
 	JobPollInterval     time.Duration
 	JobBatch            int32
+	// GearRules is the season's game data. Both halves are optional and unset means the
+	// worker establishes nothing for them, which the API reports as an absent field
+	// rather than as a zero.
+	GearRules roster.GearRules
 }
 
 func loadConfig() (Config, error) {
@@ -86,6 +93,15 @@ func loadConfig() (Config, error) {
 		return Config{}, fmt.Errorf("JOB_BATCH must be positive, got %d", jobBatch)
 	}
 
+	// Both of these are game data that changes with a patch, and neither can be read
+	// off a Raider.IO response: the payload says an item is equipped, never that it is
+	// this season's tier, and it lists every raid without saying which one is current.
+	tierSetItemIDs, err := envInt64Set("TIER_SET_ITEM_IDS")
+	if err != nil {
+		return Config{}, err
+	}
+	currentRaidSlug := os.Getenv("CURRENT_RAID_SLUG")
+
 	return Config{
 		DatabaseURL:         databaseURL,
 		LogLevel:            logLevel,
@@ -97,7 +113,35 @@ func loadConfig() (Config, error) {
 		RaiderIOMinInterval: raiderIOMinInterval,
 		JobPollInterval:     jobPollInterval,
 		JobBatch:            jobBatch,
+		GearRules: roster.GearRules{
+			TierSetItemIDs:  tierSetItemIDs,
+			CurrentRaidSlug: currentRaidSlug,
+		},
 	}, nil
+}
+
+// envInt64Set reads a comma-separated list of item ids. Empty is legal and means the
+// operator has not configured a season; a value that is not a number is not, because
+// silently dropping one id would undercount every raider wearing that piece.
+func envInt64Set(name string) (map[int64]struct{}, error) {
+	v := strings.TrimSpace(os.Getenv(name))
+	if v == "" {
+		return nil, nil
+	}
+
+	out := map[int64]struct{}{}
+	for _, field := range strings.Split(v, ",") {
+		field = strings.TrimSpace(field)
+		if field == "" {
+			continue
+		}
+		id, err := strconv.ParseInt(field, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("parsing %s: %q is not an item id", name, field)
+		}
+		out[id] = struct{}{}
+	}
+	return out, nil
 }
 
 func envDuration(name string, fallback time.Duration) (time.Duration, error) {

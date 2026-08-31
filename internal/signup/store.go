@@ -189,6 +189,29 @@ func (s *Store) ListUpcomingEvents(ctx context.Context, discordGuildID int64) ([
 	return events, nil
 }
 
+// CountSignupsByStatus tallies signups for several events in one round trip. Grouped
+// in SQL rather than by reading rows and counting in Go: a month of raid nights is a
+// query per event otherwise, each one dragging back full signup rows to learn how many
+// there are.
+//
+// An event with no signups at all is absent from the result. Seeding it, and seeding
+// the statuses nobody chose, is the domain layer's job.
+func (s *Store) CountSignupsByStatus(ctx context.Context, eventIDs []uuid.UUID) (map[uuid.UUID]map[db.SignupStatus]int, error) {
+	rows, err := s.queries.CountSignupsByStatusForEvents(ctx, eventIDs)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make(map[uuid.UUID]map[db.SignupStatus]int, len(eventIDs))
+	for _, row := range rows {
+		if out[row.EventID] == nil {
+			out[row.EventID] = map[db.SignupStatus]int{}
+		}
+		out[row.EventID][row.Status] = int(row.Total)
+	}
+	return out, nil
+}
+
 func (s *Store) ListPastEvents(ctx context.Context, discordGuildID int64) ([]Event, error) {
 	rows, err := s.queries.ListPastEvents(ctx, discordGuildID)
 	if err != nil {

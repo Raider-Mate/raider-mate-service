@@ -114,11 +114,23 @@ LIMIT sqlc.arg(row_limit);
 -- name: UpdateCharacterFromSync :exec
 -- COALESCE so a response missing class or spec leaves the stored value alone
 -- instead of blanking it.
+--
+-- The gear-derived columns below are written straight, NULL included, unlike class and
+-- spec. A raider who unequips their tier really does have no tier, and COALESCEing that
+-- away would leave last season's count on the row forever.
 UPDATE characters SET
     class = COALESCE(sqlc.narg(class), class),
     spec = COALESCE(sqlc.narg(spec), spec),
     ilvl = $2,
     mplus_score = $3,
+    enchants_missing = sqlc.narg(enchants_missing),
+    enchants_expected = sqlc.narg(enchants_expected),
+    tier_pieces = sqlc.narg(tier_pieces),
+    raid_slug = sqlc.narg(raid_slug),
+    raid_bosses = sqlc.narg(raid_bosses),
+    raid_normal_killed = sqlc.narg(raid_normal_killed),
+    raid_heroic_killed = sqlc.narg(raid_heroic_killed),
+    raid_mythic_killed = sqlc.narg(raid_mythic_killed),
     last_synced = now(),
     sync_attempted_at = now()
 WHERE id = $1;

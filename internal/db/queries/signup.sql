@@ -82,6 +82,20 @@ WHERE event_id = $1
 -- created_at is transaction start time, so it ties for signups written together.
 ORDER BY created_at ASC, id ASC;
 
+-- name: CountSignupsByStatusForEvents :many
+-- The tally behind an event's signup_counts, for a whole guild's list in one query.
+-- Grouped in SQL rather than by reading every signup row and counting in Go: a month
+-- of raid nights is a request per event otherwise, each one dragging back full signup
+-- rows in order to learn how many there are.
+--
+-- Only statuses actually present come back. Seeding the absent ones at zero is the
+-- caller's job, because the enum lives in Go and a client rendering "0 absent" needs
+-- the key present.
+SELECT event_id, status, count(*) AS total
+FROM signups
+WHERE event_id = ANY(sqlc.arg(event_ids)::uuid[])
+GROUP BY event_id, status;
+
 -- name: ListUndecidedForEvent :many
 -- Grouped by discord_id, not by character: a raider with four alts and no signup is
 -- one person who has not answered, and four DMs would be a bug.

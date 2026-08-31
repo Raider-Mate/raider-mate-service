@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/Raider-Mate/raider-mate-service/internal/db"
 	"github.com/Raider-Mate/raider-mate-service/internal/signup"
 )
@@ -28,7 +30,31 @@ type eventResponse struct {
 	// WarcraftLogsURL is absent until a raid lead attaches a report. Clients render the
 	// warcraftlogs link rather than building this URL themselves.
 	WarcraftLogsURL *string `json:"warcraftlogs_url,omitempty"`
-	Links           Links   `json:"_links"`
+	// SignupCounts is this event's signups tallied by status, every status present even
+	// at zero. Which of them reads as "coming" is the client's to decide from what it is
+	// rendering, so no total is sent: a calendar cell wants confirmed, a raid lead
+	// chasing answers wants the silence.
+	//
+	// Present on reads, absent on a create or an edit response. A write is answered with
+	// the event that was written, not with a tally the caller did not ask for and, on a
+	// create, could only ever be zeros.
+	SignupCounts map[string]int `json:"signup_counts,omitempty"`
+	Links        Links          `json:"_links"`
+}
+
+// withSignupCounts attaches a tally to a response. Separate from eventToResponse
+// because only the two read paths have one: the write paths would have to run a query
+// purely to answer a question nobody asked.
+func withSignupCounts(resp eventResponse, counts map[db.SignupStatus]int) eventResponse {
+	if counts == nil {
+		return resp
+	}
+	out := make(map[string]int, len(counts))
+	for status, n := range counts {
+		out[string(status)] = n
+	}
+	resp.SignupCounts = out
+	return resp
 }
 
 func eventToResponse(e signup.Event, actor Actor) eventResponse {
@@ -226,9 +252,20 @@ func listGuildEventsHandler(events *signup.Events, logger *slog.Logger) http.Han
 			return
 		}
 
+		ids := make([]uuid.UUID, len(list))
+		for i, e := range list {
+			ids[i] = e.ID
+		}
+		counts, err := events.SignupCounts(r.Context(), ids)
+		if err != nil {
+			logger.ErrorContext(r.Context(), "counting signups", "error", err, "scope", scope)
+			writeError(w, logger, http.StatusInternalServerError, "internal error")
+			return
+		}
+
 		out := make([]eventResponse, len(list))
 		for i, e := range list {
-			out[i] = eventToResponse(e, actor)
+			out[i] = withSignupCounts(eventToResponse(e, actor), counts[e.ID])
 		}
 		writeJSON(w, logger, http.StatusOK, out)
 	}
@@ -251,7 +288,14 @@ func getEventHandler(events *signup.Events, logger *slog.Logger) http.HandlerFun
 			return
 		}
 
-		writeJSON(w, logger, http.StatusOK, eventToResponse(event, actor))
+		counts, err := events.SignupCounts(r.Context(), []uuid.UUID{event.ID})
+		if err != nil {
+			logger.ErrorContext(r.Context(), "counting signups", "error", err, "event_id", event.ID)
+			writeError(w, logger, http.StatusInternalServerError, "internal error")
+			return
+		}
+
+		writeJSON(w, logger, http.StatusOK, withSignupCounts(eventToResponse(event, actor), counts[event.ID]))
 	}
 }
 

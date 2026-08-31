@@ -77,13 +77,26 @@ func (s *Store) ApplySync(ctx context.Context, arg applySyncParams) error {
 
 	q := s.queries.WithTx(tx)
 
-	if err := q.UpdateCharacterFromSync(ctx, db.UpdateCharacterFromSyncParams{
-		ID:         arg.characterID,
-		Class:      nilIfEmpty(arg.profile.Class),
-		Spec:       nilIfEmpty(arg.profile.Spec),
-		Ilvl:       ilvl,
-		MplusScore: score,
-	}); err != nil {
+	update := db.UpdateCharacterFromSyncParams{
+		ID:               arg.characterID,
+		Class:            nilIfEmpty(arg.profile.Class),
+		Spec:             nilIfEmpty(arg.profile.Spec),
+		Ilvl:             ilvl,
+		MplusScore:       score,
+		EnchantsMissing:  arg.detail.enchantsMissing,
+		EnchantsExpected: arg.detail.enchantsExpected,
+		TierPieces:       arg.detail.tierPieces,
+	}
+	// All five progression columns move together or none of them do. A slug with no
+	// counts beside it, or counts with no slug, would be a row nothing can read.
+	if raid := arg.detail.raid; raid != nil {
+		update.RaidSlug = &raid.Slug
+		update.RaidBosses = int16Ptr(raid.Bosses)
+		update.RaidNormalKilled = int16Ptr(raid.NormalKilled)
+		update.RaidHeroicKilled = int16Ptr(raid.HeroicKilled)
+		update.RaidMythicKilled = int16Ptr(raid.MythicKilled)
+	}
+	if err := q.UpdateCharacterFromSync(ctx, update); err != nil {
 		return fmt.Errorf("updating character: %w", err)
 	}
 
@@ -351,7 +364,7 @@ func characterFromRow(row db.Character) (Character, error) {
 		return Character{}, fmt.Errorf("converting mplus_score: %w", err)
 	}
 
-	return Character{
+	c := Character{
 		ID:         row.ID,
 		UserID:     row.UserID,
 		Name:       row.Name,
@@ -363,7 +376,43 @@ func characterFromRow(row db.Character) (Character, error) {
 		MplusScore: mplusScore,
 		IsMain:     row.IsMain,
 		Synced:     row.LastSynced.Valid,
-	}, nil
+
+		EnchantsMissing:  intPtr(row.EnchantsMissing),
+		EnchantsExpected: intPtr(row.EnchantsExpected),
+		TierPieces:       intPtr(row.TierPieces),
+	}
+
+	// The slug is what says the other four mean anything. A row written before the
+	// worker had a raid configured carries none, and reads back with no progression at
+	// all rather than with four zeros.
+	if row.RaidSlug != nil {
+		c.Progression = &RaidProgress{
+			Slug:         *row.RaidSlug,
+			Bosses:       intOrZero(row.RaidBosses),
+			NormalKilled: intOrZero(row.RaidNormalKilled),
+			HeroicKilled: intOrZero(row.RaidHeroicKilled),
+			MythicKilled: intOrZero(row.RaidMythicKilled),
+		}
+	}
+
+	return c, nil
+}
+
+// intPtr widens a nullable smallint for the domain, keeping NULL as nil: every one of
+// these columns has a real difference between "none" and "not established".
+func intPtr(n *int16) *int {
+	if n == nil {
+		return nil
+	}
+	v := int(*n)
+	return &v
+}
+
+func intOrZero(n *int16) int {
+	if n == nil {
+		return 0
+	}
+	return int(*n)
 }
 
 func charactersFromRows(rows []db.Character) ([]Character, error) {

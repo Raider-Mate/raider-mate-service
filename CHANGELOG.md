@@ -12,6 +12,40 @@ Sections are `Added`, `Changed`, `Deprecated`, `Removed`, `Fixed`, `Security`.
 
 ## [Unreleased]
 
+### Added
+
+- **Characters now carry enchant compliance, tier count, and raid progression.**
+  `GET /api/guilds/{gid}/characters` and the single-character response gained
+  `enchants_missing` and `enchants_expected`, `tier_pieces`, and a `progression` object
+  holding the tracked raid's slug and its normal, heroic, and mythic kill counts. The
+  enchant ids were already being synced into `character_snapshots.gear` and never left
+  the service; progression is new, and rides along on the profile request the worker was
+  already making.
+
+  Every field is absent rather than zero when nothing has been established. A raider
+  wearing none of the tier reads as `"tier_pieces": 0`; a service with no season
+  configured omits the field. Clients must tell those apart rather than rendering both
+  as nothing.
+
+  Two of the three need game data the Raider.IO payload does not carry, so the worker
+  reads it from the environment. `TIER_SET_ITEM_IDS` is a comma-separated list of the
+  current season's class-set item ids, across all classes, and `CURRENT_RAID_SLUG` is
+  the Raider.IO slug of the raid to track. Leave either unset and the matching field
+  stops appearing; both are logged at worker startup so an unconfigured season is
+  visible rather than silent. Which slots take an enchant is a constant in
+  `internal/roster`, updated with the expansion.
+
+- **Events now carry their signup tally.** `GET /api/guilds/{gid}/events` and
+  `GET /api/events/{id}` carry `signup_counts`, one entry per status with every status
+  present even at zero. The dashboard's month calendar needed a count per raid night and
+  the only way to get one was a request per event, each dragging back full signup rows in
+  order to count them. This is one grouped query for a whole guild's list.
+
+  No total is sent, deliberately: which statuses read as "coming" depends on what is
+  being rendered, and that decision stays with the client rather than being baked into a
+  number here. Create and edit responses omit the field; re-read the event if a write
+  needs the tally.
+
 ## [0.12.0] - 2026-08-23
 
 ### Added

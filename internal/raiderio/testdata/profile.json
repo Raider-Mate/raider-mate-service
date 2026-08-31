@@ -16,5 +16,21 @@
         "all": 3012.4
       }
     }
-  ]
+  ],
+  "raid_progression": {
+    "nerubar-palace": {
+      "summary": "8/8 N",
+      "total_bosses": 8,
+      "normal_bosses_killed": 8,
+      "heroic_bosses_killed": 0,
+      "mythic_bosses_killed": 0
+    },
+    "liberation-of-undermine": {
+      "summary": "6/8 H",
+      "total_bosses": 8,
+      "normal_bosses_killed": 8,
+      "heroic_bosses_killed": 6,
+      "mythic_bosses_killed": 2
+    }
+  }
 }

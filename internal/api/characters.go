@@ -26,9 +26,33 @@ type characterResponse struct {
 	Spec        *string  `json:"spec,omitempty"`
 	Ilvl        *float64 `json:"ilvl,omitempty"`
 	MplusScore  *float64 `json:"mplus_score,omitempty"`
-	IsMain      bool     `json:"is_main"`
-	Synced      bool     `json:"synced"`
-	Links       Links    `json:"_links"`
+	// EnchantsMissing and EnchantsExpected are counts, never a percentage: this service
+	// divides nowhere, and "2 of 8" says more to a raid lead than "75%". Both absent
+	// together, on a character carrying no gear the worker could read.
+	EnchantsMissing  *int `json:"enchants_missing,omitempty"`
+	EnchantsExpected *int `json:"enchants_expected,omitempty"`
+	// TierPieces is equipped pieces of the current season's class set. Absent when the
+	// worker has no season configured, which is not the same as a raider wearing none
+	// of it. The set bonuses land at two and four; which of those a count earns is the
+	// client's rendering, not this service's arithmetic.
+	TierPieces *int `json:"tier_pieces,omitempty"`
+	// Progression is the raid the worker tracks, absent until this character has been
+	// there. Pointers rather than zeros throughout, for the same reason.
+	Progression *progressionResponse `json:"progression,omitempty"`
+	IsMain      bool                 `json:"is_main"`
+	Synced      bool                 `json:"synced"`
+	Links       Links                `json:"_links"`
+}
+
+// progressionResponse is a character's standing in one raid. The slug rides along so a
+// client never has to guess which tier the counts describe, and so a row left over
+// from last tier is obvious rather than quietly wrong.
+type progressionResponse struct {
+	Raid   string `json:"raid"`
+	Bosses int    `json:"bosses"`
+	Normal int    `json:"normal"`
+	Heroic int    `json:"heroic"`
+	Mythic int    `json:"mythic"`
 }
 
 // characterToResponse renders one character. The two flags gate different links,
@@ -46,6 +70,17 @@ func characterToResponse(c roster.Character, owned, isRaidLead bool) characterRe
 	links.add(owned || isRaidLead, "edit", href, "PATCH")
 	links.add(owned || isRaidLead, "delete", href, "DELETE")
 
+	var progression *progressionResponse
+	if p := c.Progression; p != nil {
+		progression = &progressionResponse{
+			Raid:   p.Slug,
+			Bosses: p.Bosses,
+			Normal: p.NormalKilled,
+			Heroic: p.HeroicKilled,
+			Mythic: p.MythicKilled,
+		}
+	}
+
 	return characterResponse{
 		ID:          c.ID.String(),
 		Name:        c.Name,
@@ -56,9 +91,15 @@ func characterToResponse(c roster.Character, owned, isRaidLead bool) characterRe
 		Spec:        c.Spec,
 		Ilvl:        c.Ilvl,
 		MplusScore:  c.MplusScore,
-		IsMain:      c.IsMain,
-		Synced:      c.Synced,
-		Links:       links,
+
+		EnchantsMissing:  c.EnchantsMissing,
+		EnchantsExpected: c.EnchantsExpected,
+		TierPieces:       c.TierPieces,
+		Progression:      progression,
+
+		IsMain: c.IsMain,
+		Synced: c.Synced,
+		Links:  links,
 	}
 }
 

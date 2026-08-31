@@ -98,6 +98,7 @@ type eventStore interface {
 	ListPastEvents(ctx context.Context, discordGuildID int64) ([]Event, error)
 	UpdateEvent(ctx context.Context, in UpdateEventInput) (Event, error)
 	DeleteEvent(ctx context.Context, id uuid.UUID) error
+	CountSignupsByStatus(ctx context.Context, eventIDs []uuid.UUID) (map[uuid.UUID]map[db.SignupStatus]int, error)
 }
 
 // Events creates, edits, and deletes events, keeping scheduled_jobs in step with
@@ -112,6 +113,34 @@ type Events struct {
 // NewEvents builds an Events.
 func NewEvents(store eventStore) *Events {
 	return &Events{store: store}
+}
+
+// SignupCounts tallies each event's signups by status.
+//
+// Every status is seeded at zero, present or not, so a client can render "0 absent"
+// without holding a copy of the enum. Every requested event gets a map for the same
+// reason: an event nobody has answered is a real answer, and an absent key would make
+// a caller guess whether it meant zero or "not allowed to know".
+func (e *Events) SignupCounts(ctx context.Context, eventIDs []uuid.UUID) (map[uuid.UUID]map[db.SignupStatus]int, error) {
+	if len(eventIDs) == 0 {
+		return map[uuid.UUID]map[db.SignupStatus]int{}, nil
+	}
+
+	found, err := e.store.CountSignupsByStatus(ctx, eventIDs)
+	if err != nil {
+		return nil, fmt.Errorf("counting signups: %w", err)
+	}
+
+	all := AllStatuses()
+	out := make(map[uuid.UUID]map[db.SignupStatus]int, len(eventIDs))
+	for _, id := range eventIDs {
+		counts := make(map[db.SignupStatus]int, len(all))
+		for _, status := range all {
+			counts[status] = found[id][status]
+		}
+		out[id] = counts
+	}
+	return out, nil
 }
 
 func (e *Events) Create(ctx context.Context, in CreateEventInput) (Event, error) {

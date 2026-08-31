@@ -674,18 +674,26 @@ func (ns NullTierEnum) Value() (driver.Value, error) {
 }
 
 type Character struct {
-	ID              uuid.UUID
-	UserID          uuid.UUID
-	Name            string
-	Realm           string
-	Class           *string
-	Spec            *string
-	Ilvl            pgtype.Numeric
-	MplusScore      pgtype.Numeric
-	LastSynced      pgtype.Timestamptz
-	IsMain          bool
-	Region          string
-	SyncAttemptedAt pgtype.Timestamptz
+	ID               uuid.UUID
+	UserID           uuid.UUID
+	Name             string
+	Realm            string
+	Class            *string
+	Spec             *string
+	Ilvl             pgtype.Numeric
+	MplusScore       pgtype.Numeric
+	LastSynced       pgtype.Timestamptz
+	IsMain           bool
+	Region           string
+	SyncAttemptedAt  pgtype.Timestamptz
+	EnchantsMissing  *int16
+	EnchantsExpected *int16
+	TierPieces       *int16
+	RaidSlug         *string
+	RaidBosses       *int16
+	RaidNormalKilled *int16
+	RaidHeroicKilled *int16
+	RaidMythicKilled *int16
 }
 
 type CharacterRole struct {

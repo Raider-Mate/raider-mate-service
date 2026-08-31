@@ -46,7 +46,7 @@ func run() error {
 
 	client := raiderio.NewClient(cfg.RaiderIOBaseURL, cfg.RaiderIOAccessKey, cfg.RaiderIOMinInterval)
 	store := roster.NewStore(pool)
-	syncer := roster.NewSyncer(client, store, logger)
+	syncer := roster.NewSyncer(client, store, cfg.GearRules, logger)
 
 	reminderStore := signup.NewStore(pool)
 	runner := signup.NewRunner(reminderStore, logger)
@@ -61,6 +61,11 @@ func run() error {
 		// Whether, never which. "am I keyed?" is the first question when Raider.IO
 		// starts answering 429, and the key itself must not reach a log line.
 		"raiderio_keyed", cfg.RaiderIOAccessKey != "",
+		// An unconfigured season is not an error, and it is silent everywhere else: the
+		// API just stops carrying two fields. Saying so once at startup is what turns
+		// "the dashboard shows no tier" into a five-second answer.
+		"current_raid_slug", cfg.GearRules.CurrentRaidSlug,
+		"tier_set_item_ids", len(cfg.GearRules.TierSetItemIDs),
 	)
 
 	tick := func() {

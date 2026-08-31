@@ -24,6 +24,25 @@ type Character struct {
 	MplusScore *float64
 	IsMain     bool
 	Synced     bool
+
+	// The three gear facts the sync derives. Nil throughout means "not established":
+	// an unsynced character, or a season whose rules the worker has not been given.
+	// Never confuse one with zero, in either direction.
+	EnchantsMissing  *int
+	EnchantsExpected *int
+	TierPieces       *int
+	// Progression in the raid the worker tracks, nil until it has been there.
+	Progression *RaidProgress
+}
+
+// RaidProgress is a character's kill count in one raid, carrying the raid's slug so a
+// client never has to guess which tier the numbers describe.
+type RaidProgress struct {
+	Slug         string
+	Bosses       int
+	NormalKilled int
+	HeroicKilled int
+	MythicKilled int
 }
 
 // RoleChoice is one role a character can play, in signup-menu priority order.

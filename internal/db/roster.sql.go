@@ -47,7 +47,7 @@ SELECT
         AND NOT EXISTS (
             SELECT 1 FROM characters x WHERE x.user_id = $2 AND x.is_main
         )
-RETURNING id, user_id, name, realm, class, spec, ilvl, mplus_score, last_synced, is_main, region, sync_attempted_at
+RETURNING id, user_id, name, realm, class, spec, ilvl, mplus_score, last_synced, is_main, region, sync_attempted_at, enchants_missing, enchants_expected, tier_pieces, raid_slug, raid_bosses, raid_normal_killed, raid_heroic_killed, raid_mythic_killed
 `
 
 type CreateCharacterParams struct {
@@ -87,6 +87,14 @@ func (q *Queries) CreateCharacter(ctx context.Context, arg CreateCharacterParams
 		&i.IsMain,
 		&i.Region,
 		&i.SyncAttemptedAt,
+		&i.EnchantsMissing,
+		&i.EnchantsExpected,
+		&i.TierPieces,
+		&i.RaidSlug,
+		&i.RaidBosses,
+		&i.RaidNormalKilled,
+		&i.RaidHeroicKilled,
+		&i.RaidMythicKilled,
 	)
 	return i, err
 }
@@ -124,7 +132,7 @@ func (q *Queries) DeleteCharacterRoles(ctx context.Context, characterID uuid.UUI
 }
 
 const getCharacterInGuild = `-- name: GetCharacterInGuild :one
-SELECT c.id, c.user_id, c.name, c.realm, c.class, c.spec, c.ilvl, c.mplus_score, c.last_synced, c.is_main, c.region, c.sync_attempted_at FROM characters c
+SELECT c.id, c.user_id, c.name, c.realm, c.class, c.spec, c.ilvl, c.mplus_score, c.last_synced, c.is_main, c.region, c.sync_attempted_at, c.enchants_missing, c.enchants_expected, c.tier_pieces, c.raid_slug, c.raid_bosses, c.raid_normal_killed, c.raid_heroic_killed, c.raid_mythic_killed FROM characters c
 JOIN users u ON u.id = c.user_id
 WHERE c.id = $1 AND u.discord_guild_id = $2
 `
@@ -150,6 +158,14 @@ func (q *Queries) GetCharacterInGuild(ctx context.Context, arg GetCharacterInGui
 		&i.IsMain,
 		&i.Region,
 		&i.SyncAttemptedAt,
+		&i.EnchantsMissing,
+		&i.EnchantsExpected,
+		&i.TierPieces,
+		&i.RaidSlug,
+		&i.RaidBosses,
+		&i.RaidNormalKilled,
+		&i.RaidHeroicKilled,
+		&i.RaidMythicKilled,
 	)
 	return i, err
 }
@@ -225,7 +241,7 @@ func (q *Queries) ListCharacterRoles(ctx context.Context, characterID uuid.UUID)
 }
 
 const listCharactersByDiscord = `-- name: ListCharactersByDiscord :many
-SELECT c.id, c.user_id, c.name, c.realm, c.class, c.spec, c.ilvl, c.mplus_score, c.last_synced, c.is_main, c.region, c.sync_attempted_at FROM characters c
+SELECT c.id, c.user_id, c.name, c.realm, c.class, c.spec, c.ilvl, c.mplus_score, c.last_synced, c.is_main, c.region, c.sync_attempted_at, c.enchants_missing, c.enchants_expected, c.tier_pieces, c.raid_slug, c.raid_bosses, c.raid_normal_killed, c.raid_heroic_killed, c.raid_mythic_killed FROM characters c
 JOIN users u ON u.id = c.user_id
 WHERE u.discord_id = $1 AND u.discord_guild_id = $2
 ORDER BY c.name
@@ -258,6 +274,14 @@ func (q *Queries) ListCharactersByDiscord(ctx context.Context, arg ListCharacter
 			&i.IsMain,
 			&i.Region,
 			&i.SyncAttemptedAt,
+			&i.EnchantsMissing,
+			&i.EnchantsExpected,
+			&i.TierPieces,
+			&i.RaidSlug,
+			&i.RaidBosses,
+			&i.RaidNormalKilled,
+			&i.RaidHeroicKilled,
+			&i.RaidMythicKilled,
 		); err != nil {
 			return nil, err
 		}
@@ -270,7 +294,7 @@ func (q *Queries) ListCharactersByDiscord(ctx context.Context, arg ListCharacter
 }
 
 const listCharactersByUser = `-- name: ListCharactersByUser :many
-SELECT id, user_id, name, realm, class, spec, ilvl, mplus_score, last_synced, is_main, region, sync_attempted_at FROM characters
+SELECT id, user_id, name, realm, class, spec, ilvl, mplus_score, last_synced, is_main, region, sync_attempted_at, enchants_missing, enchants_expected, tier_pieces, raid_slug, raid_bosses, raid_normal_killed, raid_heroic_killed, raid_mythic_killed FROM characters
 WHERE user_id = $1
 ORDER BY name
 `
@@ -297,6 +321,14 @@ func (q *Queries) ListCharactersByUser(ctx context.Context, userID uuid.UUID) ([
 			&i.IsMain,
 			&i.Region,
 			&i.SyncAttemptedAt,
+			&i.EnchantsMissing,
+			&i.EnchantsExpected,
+			&i.TierPieces,
+			&i.RaidSlug,
+			&i.RaidBosses,
+			&i.RaidNormalKilled,
+			&i.RaidHeroicKilled,
+			&i.RaidMythicKilled,
 		); err != nil {
 			return nil, err
 		}
@@ -309,7 +341,7 @@ func (q *Queries) ListCharactersByUser(ctx context.Context, userID uuid.UUID) ([
 }
 
 const listCharactersDueForSync = `-- name: ListCharactersDueForSync :many
-SELECT id, user_id, name, realm, class, spec, ilvl, mplus_score, last_synced, is_main, region, sync_attempted_at FROM characters
+SELECT id, user_id, name, realm, class, spec, ilvl, mplus_score, last_synced, is_main, region, sync_attempted_at, enchants_missing, enchants_expected, tier_pieces, raid_slug, raid_bosses, raid_normal_killed, raid_heroic_killed, raid_mythic_killed FROM characters
 WHERE (last_synced IS NULL OR last_synced < $1)
   AND (sync_attempted_at IS NULL OR sync_attempted_at < $1)
 ORDER BY sync_attempted_at ASC NULLS FIRST
@@ -347,6 +379,14 @@ func (q *Queries) ListCharactersDueForSync(ctx context.Context, arg ListCharacte
 			&i.IsMain,
 			&i.Region,
 			&i.SyncAttemptedAt,
+			&i.EnchantsMissing,
+			&i.EnchantsExpected,
+			&i.TierPieces,
+			&i.RaidSlug,
+			&i.RaidBosses,
+			&i.RaidNormalKilled,
+			&i.RaidHeroicKilled,
+			&i.RaidMythicKilled,
 		); err != nil {
 			return nil, err
 		}
@@ -359,7 +399,7 @@ func (q *Queries) ListCharactersDueForSync(ctx context.Context, arg ListCharacte
 }
 
 const listCharactersInGuild = `-- name: ListCharactersInGuild :many
-SELECT c.id, c.user_id, c.name, c.realm, c.class, c.spec, c.ilvl, c.mplus_score, c.last_synced, c.is_main, c.region, c.sync_attempted_at FROM characters c
+SELECT c.id, c.user_id, c.name, c.realm, c.class, c.spec, c.ilvl, c.mplus_score, c.last_synced, c.is_main, c.region, c.sync_attempted_at, c.enchants_missing, c.enchants_expected, c.tier_pieces, c.raid_slug, c.raid_bosses, c.raid_normal_killed, c.raid_heroic_killed, c.raid_mythic_killed FROM characters c
 JOIN users u ON u.id = c.user_id
 WHERE u.discord_guild_id = $1
 ORDER BY c.name
@@ -387,6 +427,14 @@ func (q *Queries) ListCharactersInGuild(ctx context.Context, discordGuildID int6
 			&i.IsMain,
 			&i.Region,
 			&i.SyncAttemptedAt,
+			&i.EnchantsMissing,
+			&i.EnchantsExpected,
+			&i.TierPieces,
+			&i.RaidSlug,
+			&i.RaidBosses,
+			&i.RaidNormalKilled,
+			&i.RaidHeroicKilled,
+			&i.RaidMythicKilled,
 		); err != nil {
 			return nil, err
 		}
@@ -497,21 +545,41 @@ UPDATE characters SET
     spec = COALESCE($5, spec),
     ilvl = $2,
     mplus_score = $3,
+    enchants_missing = $6,
+    enchants_expected = $7,
+    tier_pieces = $8,
+    raid_slug = $9,
+    raid_bosses = $10,
+    raid_normal_killed = $11,
+    raid_heroic_killed = $12,
+    raid_mythic_killed = $13,
     last_synced = now(),
     sync_attempted_at = now()
 WHERE id = $1
 `
 
 type UpdateCharacterFromSyncParams struct {
-	ID         uuid.UUID
-	Ilvl       pgtype.Numeric
-	MplusScore pgtype.Numeric
-	Class      *string
-	Spec       *string
+	ID               uuid.UUID
+	Ilvl             pgtype.Numeric
+	MplusScore       pgtype.Numeric
+	Class            *string
+	Spec             *string
+	EnchantsMissing  *int16
+	EnchantsExpected *int16
+	TierPieces       *int16
+	RaidSlug         *string
+	RaidBosses       *int16
+	RaidNormalKilled *int16
+	RaidHeroicKilled *int16
+	RaidMythicKilled *int16
 }
 
 // COALESCE so a response missing class or spec leaves the stored value alone
 // instead of blanking it.
+//
+// The gear-derived columns below are written straight, NULL included, unlike class and
+// spec. A raider who unequips their tier really does have no tier, and COALESCEing that
+// away would leave last season's count on the row forever.
 func (q *Queries) UpdateCharacterFromSync(ctx context.Context, arg UpdateCharacterFromSyncParams) error {
 	_, err := q.db.Exec(ctx, updateCharacterFromSync,
 		arg.ID,
@@ -519,6 +587,14 @@ func (q *Queries) UpdateCharacterFromSync(ctx context.Context, arg UpdateCharact
 		arg.MplusScore,
 		arg.Class,
 		arg.Spec,
+		arg.EnchantsMissing,
+		arg.EnchantsExpected,
+		arg.TierPieces,
+		arg.RaidSlug,
+		arg.RaidBosses,
+		arg.RaidNormalKilled,
+		arg.RaidHeroicKilled,
+		arg.RaidMythicKilled,
 	)
 	return err
 }

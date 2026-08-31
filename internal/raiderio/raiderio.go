@@ -39,6 +39,20 @@ type Profile struct {
 	ItemLevel       float64
 	MythicPlusScore float64
 	Gear            []GearItem
+	// Progression is every raid Raider.IO reported, sorted by slug. Nothing in the
+	// payload says which tier is current, so picking one is the caller's decision and
+	// this package refuses to make it.
+	Progression []RaidProgress
+}
+
+// RaidProgress is one raid's kill counts for a character. Bosses is the raid's size,
+// so a client can render "6/8" without a table of its own.
+type RaidProgress struct {
+	Slug         string
+	Bosses       int
+	NormalKilled int
+	HeroicKilled int
+	MythicKilled int
 }
 
 // GearItem is one equipped item slot.
@@ -97,7 +111,7 @@ func (c *Client) CharacterProfile(ctx context.Context, region, realm, name strin
 		"region": {region},
 		"realm":  {realm},
 		"name":   {name},
-		"fields": {"gear,mythic_plus_scores_by_season:current"},
+		"fields": {"gear,mythic_plus_scores_by_season:current,raid_progression"},
 	}
 	if c.accessKey != "" {
 		query.Set("access_key", c.accessKey)
@@ -173,6 +187,16 @@ type rawProfile struct {
 			All float64 `json:"all"`
 		} `json:"scores"`
 	} `json:"mythic_plus_scores_by_season"`
+	// Keyed by raid slug. A character who has never set foot in a raid comes back with
+	// the key absent rather than with an empty object.
+	RaidProgression map[string]rawRaidProgress `json:"raid_progression"`
+}
+
+type rawRaidProgress struct {
+	TotalBosses        int `json:"total_bosses"`
+	NormalBossesKilled int `json:"normal_bosses_killed"`
+	HeroicBossesKilled int `json:"heroic_bosses_killed"`
+	MythicBossesKilled int `json:"mythic_bosses_killed"`
 }
 
 type rawGearItem struct {
@@ -206,6 +230,20 @@ func (r rawProfile) toProfile() Profile {
 	// Map iteration order is random; sort by slot so two calls with identical gear
 	// produce identical marshalled bytes for the sync package's change detection.
 	sort.Slice(p.Gear, func(i, j int) bool { return p.Gear[i].Slot < p.Gear[j].Slot })
+
+	p.Progression = make([]RaidProgress, 0, len(r.RaidProgression))
+	for slug, raid := range r.RaidProgression {
+		p.Progression = append(p.Progression, RaidProgress{
+			Slug:         slug,
+			Bosses:       raid.TotalBosses,
+			NormalKilled: raid.NormalBossesKilled,
+			HeroicKilled: raid.HeroicBossesKilled,
+			MythicKilled: raid.MythicBossesKilled,
+		})
+	}
+	// Sorted for the same reason the gear is: the syncer compares two profiles to
+	// decide whether a write is a no-op, and map order would make that a coin flip.
+	sort.Slice(p.Progression, func(i, j int) bool { return p.Progression[i].Slug < p.Progression[j].Slug })
 
 	return p
 }
