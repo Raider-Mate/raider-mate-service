@@ -12,6 +12,8 @@ Sections are `Added`, `Changed`, `Deprecated`, `Removed`, `Fixed`, `Security`.
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-09-05
+
 ### Changed
 
 - **Signups are final once the raid starts.** Nobody takes their name off a night they
