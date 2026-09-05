@@ -12,6 +12,93 @@ Sections are `Added`, `Changed`, `Deprecated`, `Removed`, `Fixed`, `Security`.
 
 ## [Unreleased]
 
+### Changed
+
+- **Signups are final once the raid starts.** Nobody takes their name off a night they
+  were part of. Past `starts_at` the service refuses every signup write with 409 and
+  `allowed_statuses` comes back empty, so the dashboard and the bot stop offering the
+  buttons rather than discovering the refusal by pressing them.
+
+  The one write that survives is a raid lead marking `NO_SHOW`, because that records what
+  happened rather than changing what somebody said they would do.
+
+  Withdrawing is refused for everyone, raid leads included: a signup is the record a
+  no-show is judged against, and deleting it after the night erases the evidence.
+
+  Late requests go the same way. Nothing can be filed against a raid that has begun, and a
+  request still pending when the pull happened can no longer be approved onto it. This is
+  a distinct refusal from signups closing, which is exactly what the late queue is for; a
+  raid that already happened is past anything a raid lead could usefully wave through.
+
+### Added
+
+- **Raider Mate reads the WarcraftLogs report attached to an event.** Until now the
+  service stored the URL and never looked at it. It now fetches the report and keeps what
+  it said: every boss pull with its kill or wipe percentage and how long it ran, damage,
+  healing and deaths per raider over the night, and the log's players matched against the
+  guild's roster.
+
+  `GET /api/events/{id}/report` returns it. The event resource carries exactly one of
+  `report`, `report-pending` and `report-failed`, so a client renders the numbers, a
+  spinner or the problem from the rel name without fetching anything first. A raid lead
+  also gets `refresh-report`, which is `POST /api/events/{id}/report/refresh`.
+
+  It is free, for every guild. WarcraftLogs gives these numbers away at the URL the event
+  already links to, and this service does not paywall what the third party gives away.
+
+- **Per-pull numbers, not only the night.** Every boss pull carries its own damage,
+  healing and deaths, so a client can show who was doing what on the wipe rather than only
+  over the evening. They ride along on `GET /api/events/{id}/report` inside each fight, so
+  selecting a pull costs a client no request.
+
+  They live in their own table, `event_report_fight_raiders`, rather than beside the night
+  totals. An earlier version put them in the same table behind a sentinel id, which was
+  additive to the schema and destructive to anything already running: a reader written
+  before the change had no reason to filter on a column that did not exist, so it served
+  the night plus every pull as one list. A migration cannot assume the processes reading
+  the table restart with it.
+
+  This roughly triples what a report costs against the hourly point budget, from about
+  eighteen points to about fifty-five for a twelve-pull night, which is the other reason a
+  busy guild wants its own key. Pulls past the twenty-fourth in one report are not read
+  individually; the night totals still cover them and the fight simply carries no raiders
+  of its own.
+
+- **Who actually turned up.** The report's turnout splits three ways: raiders matched to
+  the roster and seen in the log, players in the log with no character on the roster, and
+  characters that were confirmed on the sheet and never appeared. Tentative signups are
+  not counted as missing, because "maybe" was never a promise. `roster_overlap` near zero
+  is what a report pasted onto the wrong event looks like.
+
+- **A guild can supply its own WarcraftLogs API client.** The point budget is 3600 an hour
+  per client key and a full report costs about eighteen, so one large guild on a shared
+  key can spend it for everybody. A guild that pastes its own client id and key gets its
+  own budget; one that has not falls back to the instance's.
+
+  The key is encrypted at rest and is never returned by any endpoint: a raid lead reads
+  back the client id and the date it was set, and nothing else.
+
+- **New configuration.** `WARCRAFT_LOGS_CLIENT_ID` and `WARCRAFT_LOGS_API_KEY` are the
+  instance's own WarcraftLogs client, registered at
+  <https://www.warcraftlogs.com/api/clients/>. The redirect URI field on that page is not
+  used: this service authenticates with client credentials and never redirects.
+  `WARCRAFT_LOGS_ENCRYPTION_KEY` (32 bytes, base64) seals guild-supplied keys, and
+  without it the service refuses to store one rather than writing it in the clear.
+  `WARCRAFT_LOGS_POLL_INTERVAL`, `WARCRAFT_LOGS_BATCH`, `WARCRAFT_LOGS_MIN_INTERVAL` and
+  `WARCRAFT_LOGS_LIVE_REFRESH` tune the worker.
+
+  An instance with no WarcraftLogs credentials behaves exactly as before: no report rels,
+  no fetching, and the stored URL still reads back as it always did.
+
+### Notes for operators
+
+- A private report cannot be read. Reaching one needs the report owner's own consent
+  through an OAuth flow this service deliberately does not implement, so the report comes
+  back as `PRIVATE` and the recovery is one click on WarcraftLogs: set it to Unlisted.
+- Reports already attached before this release are picked up automatically; migration
+  `00020` queues them.
+
+
 ## [0.13.0] - 2026-08-31
 
 ### Added

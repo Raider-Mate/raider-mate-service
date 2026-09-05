@@ -35,6 +35,10 @@ type fakeSignupStore struct {
 
 func newFakeSignupStore() *fakeSignupStore {
 	return &fakeSignupStore{
+		// A raid in the future by default. The zero Event reads as one that started at
+		// the epoch, and every signup write is refused on an event that has begun, so
+		// leaving it zero would make every test here a test of that one rule.
+		event:    Event{StartsAt: time.Now().Add(24 * time.Hour), SignupDeadline: time.Now().Add(12 * time.Hour)},
 		lateReqs: map[uuid.UUID]LateRequest{},
 		decided:  map[uuid.UUID]db.RequestState{},
 	}
@@ -117,7 +121,7 @@ func (s *fakeSignupStore) InsertNotification(_ context.Context, n Notification) 
 func TestWritePassesBeforeTheDeadlineForAPlayer(t *testing.T) {
 	now := time.Now()
 	store := newFakeSignupStore()
-	store.event = Event{SignupDeadline: now.Add(time.Hour)}
+	store.event = Event{StartsAt: time.Now().Add(2 * time.Hour), SignupDeadline: now.Add(time.Hour)}
 
 	_, err := NewSignups(store, newTestLogger()).Write(context.Background(), SignupWrite{Status: db.SignupStatusCONFIRMED}, true, false)
 	if err != nil {
@@ -131,7 +135,7 @@ func TestWritePassesBeforeTheDeadlineForAPlayer(t *testing.T) {
 func TestWriteRejectsAPlayerPastTheDeadline(t *testing.T) {
 	now := time.Now()
 	store := newFakeSignupStore()
-	store.event = Event{SignupDeadline: now.Add(-time.Hour)}
+	store.event = Event{StartsAt: time.Now().Add(2 * time.Hour), SignupDeadline: now.Add(-time.Hour)}
 
 	_, err := NewSignups(store, newTestLogger()).Write(context.Background(), SignupWrite{Status: db.SignupStatusCONFIRMED}, true, false)
 	if !errors.Is(err, ErrSignupsClosed) {
@@ -145,7 +149,7 @@ func TestWriteRejectsAPlayerPastTheDeadline(t *testing.T) {
 func TestWritePassesForARaidLeadPastTheDeadline(t *testing.T) {
 	now := time.Now()
 	store := newFakeSignupStore()
-	store.event = Event{SignupDeadline: now.Add(-time.Hour)}
+	store.event = Event{StartsAt: time.Now().Add(2 * time.Hour), SignupDeadline: now.Add(-time.Hour)}
 
 	_, err := NewSignups(store, newTestLogger()).Write(context.Background(), SignupWrite{Status: db.SignupStatusCONFIRMED}, true, true)
 	if err != nil {
@@ -184,8 +188,10 @@ func TestWriteRejectsLateOnceTheRaidHasStarted(t *testing.T) {
 	lateUntil := now.Add(time.Hour)
 	_, err := NewSignups(store, newTestLogger()).Write(context.Background(),
 		SignupWrite{Status: db.SignupStatusLATE, LateUntil: &lateUntil}, true, false)
-	if !errors.Is(err, ErrSignupsClosed) {
-		t.Fatalf("err = %v, want ErrSignupsClosed", err)
+	// ErrEventStarted rather than ErrSignupsClosed: a closed sheet is what the late queue
+	// is for, and a raid that has begun is past anything a raid lead could approve.
+	if !errors.Is(err, ErrEventStarted) {
+		t.Fatalf("err = %v, want ErrEventStarted", err)
 	}
 	if len(store.written) != 0 {
 		t.Errorf("wrote %d signups, want none", len(store.written))
@@ -235,7 +241,7 @@ func TestWriteStatusAuthority(t *testing.T) {
 		name := string(tt.status) + "/" + who + "/" + whose
 		t.Run(name, func(t *testing.T) {
 			store := newFakeSignupStore()
-			store.event = Event{SignupDeadline: time.Now().Add(time.Hour)}
+			store.event = Event{StartsAt: time.Now().Add(2 * time.Hour), SignupDeadline: time.Now().Add(time.Hour)}
 
 			_, err := NewSignups(store, newTestLogger()).Write(
 				context.Background(), SignupWrite{Status: tt.status}, tt.owned, tt.isRaidLead)
@@ -257,7 +263,7 @@ func TestWriteStatusAuthority(t *testing.T) {
 func TestWriteNotifiesWhenTheWriteEmptiesALockedComp(t *testing.T) {
 	channelID := int64(42)
 	store := newFakeSignupStore()
-	store.event = Event{SignupDeadline: time.Now().Add(time.Hour), ChannelID: &channelID}
+	store.event = Event{StartsAt: time.Now().Add(2 * time.Hour), SignupDeadline: time.Now().Add(time.Hour), ChannelID: &channelID}
 	store.dropFrom = []string{"prog comp"}
 
 	if _, err := NewSignups(store, newTestLogger()).Write(context.Background(), SignupWrite{
@@ -280,7 +286,7 @@ func TestWriteNotifiesWhenTheWriteEmptiesALockedComp(t *testing.T) {
 func TestWriteFailsWhenTheDroppedSlotNotificationCannotBeQueued(t *testing.T) {
 	channelID := int64(42)
 	store := newFakeSignupStore()
-	store.event = Event{SignupDeadline: time.Now().Add(time.Hour), ChannelID: &channelID}
+	store.event = Event{StartsAt: time.Now().Add(2 * time.Hour), SignupDeadline: time.Now().Add(time.Hour), ChannelID: &channelID}
 	store.dropFrom = []string{"prog comp"}
 	store.notifyErr = errors.New("outbox unavailable")
 
@@ -295,7 +301,7 @@ func TestWriteFailsWhenTheDroppedSlotNotificationCannotBeQueued(t *testing.T) {
 func TestWriteNotifiesNobodyWhenNoCompSlotWasHeld(t *testing.T) {
 	channelID := int64(42)
 	store := newFakeSignupStore()
-	store.event = Event{SignupDeadline: time.Now().Add(time.Hour), ChannelID: &channelID}
+	store.event = Event{StartsAt: time.Now().Add(2 * time.Hour), SignupDeadline: time.Now().Add(time.Hour), ChannelID: &channelID}
 
 	if _, err := NewSignups(store, newTestLogger()).Write(context.Background(), SignupWrite{
 		Status: db.SignupStatusDECLINED,
@@ -310,7 +316,7 @@ func TestWriteNotifiesNobodyWhenNoCompSlotWasHeld(t *testing.T) {
 
 func TestWriteClearsLateUntilWhenStatusIsNotLate(t *testing.T) {
 	store := newFakeSignupStore()
-	store.event = Event{SignupDeadline: time.Now().Add(time.Hour)}
+	store.event = Event{StartsAt: time.Now().Add(2 * time.Hour), SignupDeadline: time.Now().Add(time.Hour)}
 	lateUntil := time.Now().Add(20 * time.Minute)
 
 	_, err := NewSignups(store, newTestLogger()).Write(context.Background(), SignupWrite{
@@ -326,7 +332,7 @@ func TestWriteClearsLateUntilWhenStatusIsNotLate(t *testing.T) {
 
 func TestWriteKeepsLateUntilWhenStatusIsLate(t *testing.T) {
 	store := newFakeSignupStore()
-	store.event = Event{SignupDeadline: time.Now().Add(time.Hour)}
+	store.event = Event{StartsAt: time.Now().Add(2 * time.Hour), SignupDeadline: time.Now().Add(time.Hour)}
 	lateUntil := time.Now().Add(20 * time.Minute)
 
 	_, err := NewSignups(store, newTestLogger()).Write(context.Background(), SignupWrite{
@@ -345,7 +351,7 @@ func TestWriteKeepsLateUntilWhenStatusIsLate(t *testing.T) {
 func TestWithdrawDropsTheSeatAndNotifiesWithNoStatus(t *testing.T) {
 	channelID := int64(42)
 	store := newFakeSignupStore()
-	store.event = Event{SignupDeadline: time.Now().Add(time.Hour), ChannelID: &channelID}
+	store.event = Event{StartsAt: time.Now().Add(2 * time.Hour), SignupDeadline: time.Now().Add(time.Hour), ChannelID: &channelID}
 	store.dropFrom = []string{"prog comp"}
 
 	if err := NewSignups(store, newTestLogger()).Withdraw(
@@ -375,7 +381,7 @@ func TestWithdrawDropsTheSeatAndNotifiesWithNoStatus(t *testing.T) {
 func TestWithdrawNotifiesNobodyWhenNoSeatWasHeld(t *testing.T) {
 	channelID := int64(42)
 	store := newFakeSignupStore()
-	store.event = Event{SignupDeadline: time.Now().Add(time.Hour), ChannelID: &channelID}
+	store.event = Event{StartsAt: time.Now().Add(2 * time.Hour), SignupDeadline: time.Now().Add(time.Hour), ChannelID: &channelID}
 
 	if err := NewSignups(store, newTestLogger()).Withdraw(
 		context.Background(), uuid.New(), uuid.New(), false); err != nil {
@@ -388,7 +394,7 @@ func TestWithdrawNotifiesNobodyWhenNoSeatWasHeld(t *testing.T) {
 
 func TestWithdrawRejectsAPlayerPastTheDeadline(t *testing.T) {
 	store := newFakeSignupStore()
-	store.event = Event{SignupDeadline: time.Now().Add(-time.Hour)}
+	store.event = Event{StartsAt: time.Now().Add(2 * time.Hour), SignupDeadline: time.Now().Add(-time.Hour)}
 
 	err := NewSignups(store, newTestLogger()).Withdraw(context.Background(), uuid.New(), uuid.New(), false)
 	if !errors.Is(err, ErrSignupsClosed) {
@@ -404,6 +410,7 @@ func TestWithdrawRejectsAPlayerPastTheDeadline(t *testing.T) {
 func postedEvent() Event {
 	channelID, messageID := int64(42), int64(777)
 	return Event{
+		StartsAt:       time.Now().Add(2 * time.Hour),
 		SignupDeadline: time.Now().Add(time.Hour),
 		ChannelID:      &channelID,
 		MessageID:      &messageID,
@@ -457,7 +464,7 @@ func TestWithdrawAsksForARedrawOfTheEventMessage(t *testing.T) {
 func TestWriteAsksForNoRedrawWhenThereIsNoMessageToEdit(t *testing.T) {
 	channelID := int64(42)
 	store := newFakeSignupStore()
-	store.event = Event{SignupDeadline: time.Now().Add(time.Hour), ChannelID: &channelID}
+	store.event = Event{StartsAt: time.Now().Add(2 * time.Hour), SignupDeadline: time.Now().Add(time.Hour), ChannelID: &channelID}
 
 	if _, err := NewSignups(store, newTestLogger()).Write(context.Background(), SignupWrite{
 		Status: db.SignupStatusCONFIRMED,
@@ -467,5 +474,80 @@ func TestWriteAsksForNoRedrawWhenThereIsNoMessageToEdit(t *testing.T) {
 
 	if len(store.notified) != 0 {
 		t.Errorf("queued %d notifications, want none", len(store.notified))
+	}
+}
+
+// Once the pull happens the sheet is history. These are the rule the dashboard and the
+// bot both inherit, so they are asserted here rather than in either client.
+func TestWriteRejectsEveryRaiderStatusOnceTheRaidHasStarted(t *testing.T) {
+	for _, status := range selfReported {
+		t.Run(string(status), func(t *testing.T) {
+			store := newFakeSignupStore()
+			store.event = Event{
+				SignupDeadline: time.Now().Add(-2 * time.Hour),
+				StartsAt:       time.Now().Add(-time.Hour),
+			}
+
+			_, err := NewSignups(store, newTestLogger()).Write(context.Background(),
+				SignupWrite{Status: status}, true, false)
+			if !errors.Is(err, ErrEventStarted) {
+				t.Fatalf("err = %v, want ErrEventStarted", err)
+			}
+			if len(store.written) != 0 {
+				t.Errorf("wrote %d signups, want none", len(store.written))
+			}
+		})
+	}
+}
+
+// The one write that outlives the pull, because it records what happened rather than
+// changing what anybody said they would do.
+func TestWriteAllowsARaidLeadToMarkNoShowAfterTheRaidHasStarted(t *testing.T) {
+	store := newFakeSignupStore()
+	store.event = Event{
+		SignupDeadline: time.Now().Add(-2 * time.Hour),
+		StartsAt:       time.Now().Add(-time.Hour),
+	}
+
+	_, err := NewSignups(store, newTestLogger()).Write(context.Background(),
+		SignupWrite{Status: db.SignupStatusNOSHOW}, false, true)
+	if err != nil {
+		t.Fatalf("Write NO_SHOW after the raid started: %v", err)
+	}
+	if len(store.written) != 1 {
+		t.Fatalf("wrote %d signups, want 1", len(store.written))
+	}
+}
+
+// Nobody, raid lead included: a signup is the record a no-show is judged against, and
+// deleting it after the night erases the evidence.
+func TestWithdrawIsRefusedOnceTheRaidHasStarted(t *testing.T) {
+	for _, isRaidLead := range []bool{false, true} {
+		store := newFakeSignupStore()
+		store.event = Event{
+			SignupDeadline: time.Now().Add(-2 * time.Hour),
+			StartsAt:       time.Now().Add(-time.Hour),
+		}
+
+		err := NewSignups(store, newTestLogger()).Withdraw(
+			context.Background(), uuid.New(), uuid.New(), isRaidLead)
+		if !errors.Is(err, ErrEventStarted) {
+			t.Fatalf("raid lead %v: err = %v, want ErrEventStarted", isRaidLead, err)
+		}
+		if len(store.deleted) != 0 {
+			t.Errorf("raid lead %v: deleted %d signups, want none", isRaidLead, len(store.deleted))
+		}
+	}
+}
+
+func TestAllowedStatusesAfterTheRaidHasStarted(t *testing.T) {
+	if got := AllowedStatuses(true, false, true); len(got) != 0 {
+		t.Errorf("a raider is offered %v, want nothing", got)
+	}
+	if got := AllowedStatuses(true, true, true); len(got) != 1 || got[0] != db.SignupStatusNOSHOW {
+		t.Errorf("a raid lead is offered %v, want NO_SHOW alone", got)
+	}
+	if got := AllowedStatuses(false, false, true); len(got) != 0 {
+		t.Errorf("a stranger is offered %v, want nothing", got)
 	}
 }

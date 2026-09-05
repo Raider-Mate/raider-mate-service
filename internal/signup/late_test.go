@@ -14,7 +14,7 @@ import (
 func TestFileWritesTheRequestAndNotifiesWhenAChannelIsKnown(t *testing.T) {
 	store := newFakeSignupStore()
 	channelID := int64(555)
-	store.event = Event{DiscordGuildID: 100, ChannelID: &channelID}
+	store.event = Event{StartsAt: time.Now().Add(2 * time.Hour), DiscordGuildID: 100, ChannelID: &channelID}
 	store.roleIDs = []int64{781, 799}
 
 	req, err := NewLateRequests(store, newTestLogger()).File(context.Background(), LateRequestWrite{
@@ -43,7 +43,7 @@ func TestFileWritesTheRequestAndNotifiesWhenAChannelIsKnown(t *testing.T) {
 
 func TestFileSkipsTheNotificationWithNoChannelKnown(t *testing.T) {
 	store := newFakeSignupStore()
-	store.event = Event{DiscordGuildID: 100, ChannelID: nil}
+	store.event = Event{StartsAt: time.Now().Add(2 * time.Hour), DiscordGuildID: 100, ChannelID: nil}
 
 	_, err := NewLateRequests(store, newTestLogger()).File(context.Background(), LateRequestWrite{
 		EventID: uuid.New(), CharacterID: uuid.New(), Status: db.SignupStatusLATE,
@@ -90,7 +90,7 @@ func TestApproveWritesTheSignupAndMarksDecided(t *testing.T) {
 func TestApproveNotifiesWhenTheApprovedSignupEmptiesALockedComp(t *testing.T) {
 	channelID := int64(42)
 	store := newFakeSignupStore()
-	store.event = Event{ChannelID: &channelID}
+	store.event = Event{StartsAt: time.Now().Add(2 * time.Hour), ChannelID: &channelID}
 	store.dropFrom = []string{"prog comp"}
 
 	req, err := store.UpsertLateRequest(context.Background(), LateRequestWrite{
@@ -117,7 +117,7 @@ func TestApproveNotifiesWhenTheApprovedSignupEmptiesALockedComp(t *testing.T) {
 func TestFileFailsWhenTheNotificationCannotBeQueued(t *testing.T) {
 	channelID := int64(42)
 	store := newFakeSignupStore()
-	store.event = Event{ChannelID: &channelID}
+	store.event = Event{StartsAt: time.Now().Add(2 * time.Hour), ChannelID: &channelID}
 	store.notifyErr = errors.New("outbox unavailable")
 
 	_, err := NewLateRequests(store, newTestLogger()).File(context.Background(), LateRequestWrite{
@@ -220,5 +220,41 @@ func TestRejectMarksDecidedWithoutTouchingTheSignup(t *testing.T) {
 	}
 	if store.decided[req.ID] != db.RequestStateREJECTED {
 		t.Errorf("decided state = %s, want REJECTED", store.decided[req.ID])
+	}
+}
+
+// The queue exists so a raid lead can wave somebody in before the pull. After it there is
+// nothing left to approve, and a pending row would sit in the queue forever.
+func TestFileIsRefusedOnceTheRaidHasStarted(t *testing.T) {
+	store := newFakeSignupStore()
+	store.event = Event{StartsAt: time.Now().Add(-time.Hour), DiscordGuildID: 100}
+
+	_, err := NewLateRequests(store, newTestLogger()).File(context.Background(), LateRequestWrite{
+		EventID: uuid.New(), CharacterID: uuid.New(), Status: db.SignupStatusCONFIRMED,
+	})
+	if !errors.Is(err, ErrEventStarted) {
+		t.Fatalf("err = %v, want ErrEventStarted", err)
+	}
+	if len(store.lateWritten) != 0 {
+		t.Errorf("filed %d requests, want none", len(store.lateWritten))
+	}
+}
+
+// A request that was pending when the raid began cannot be approved onto it afterwards.
+func TestApproveIsRefusedOnceTheRaidHasStarted(t *testing.T) {
+	store := newFakeSignupStore()
+	store.event = Event{StartsAt: time.Now().Add(-time.Hour)}
+	id := uuid.New()
+	store.lateReqs[id] = LateRequest{
+		ID: id, EventID: uuid.New(), CharacterID: uuid.New(),
+		Status: db.SignupStatusCONFIRMED, State: db.RequestStatePENDING,
+	}
+
+	err := NewLateRequests(store, newTestLogger()).Approve(context.Background(), id)
+	if !errors.Is(err, ErrEventStarted) {
+		t.Fatalf("err = %v, want ErrEventStarted", err)
+	}
+	if len(store.written) != 0 {
+		t.Errorf("wrote %d signups, want none", len(store.written))
 	}
 }

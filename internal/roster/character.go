@@ -114,7 +114,7 @@ func NewCharacters(store characterStore) *Characters {
 // stored. A realm typed as a raider sees it in game ("Twisting Nether") is not a slug,
 // and the syncer's fetch would fail on it forever without ever clearing last_synced.
 func (c *Characters) Register(ctx context.Context, in RegisterInput) (Character, error) {
-	in.Realm = slugifyRealm(in.Realm)
+	in.Realm = RealmSlug(in.Realm)
 	in.Region = normalizeRegion(in.Region)
 
 	character, err := c.store.RegisterCharacter(ctx, in)

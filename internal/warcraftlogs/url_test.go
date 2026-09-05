@@ -1,11 +1,11 @@
-package signup
+package warcraftlogs
 
 import (
 	"errors"
 	"testing"
 )
 
-func TestNormalizeWarcraftLogsURL(t *testing.T) {
+func TestNormalizeURL(t *testing.T) {
 	tests := []struct {
 		name string
 		in   string
@@ -26,18 +26,18 @@ func TestNormalizeWarcraftLogsURL(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := NormalizeWarcraftLogsURL(tt.in)
+			got, err := NormalizeURL(tt.in)
 			if err != nil {
-				t.Fatalf("NormalizeWarcraftLogsURL(%q) returned %v", tt.in, err)
+				t.Fatalf("NormalizeURL(%q) returned %v", tt.in, err)
 			}
 			if got != tt.want {
-				t.Errorf("NormalizeWarcraftLogsURL(%q) = %q, want %q", tt.in, got, tt.want)
+				t.Errorf("NormalizeURL(%q) = %q, want %q", tt.in, got, tt.want)
 			}
 		})
 	}
 }
 
-func TestNormalizeWarcraftLogsURLRejects(t *testing.T) {
+func TestNormalizeURLRejects(t *testing.T) {
 	tests := []struct {
 		name string
 		in   string
@@ -56,10 +56,59 @@ func TestNormalizeWarcraftLogsURLRejects(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := NormalizeWarcraftLogsURL(tt.in)
-			if !errors.Is(err, ErrNotAWarcraftLogsReport) {
-				t.Fatalf("NormalizeWarcraftLogsURL(%q) = %q, %v; want ErrNotAWarcraftLogsReport", tt.in, got, err)
+			got, err := NormalizeURL(tt.in)
+			if !errors.Is(err, ErrNotAReport) {
+				t.Fatalf("NormalizeURL(%q) = %q, %v; want ErrNotAReport", tt.in, got, err)
 			}
 		})
+	}
+}
+
+// The host is half of what a fetch needs: classic and fresh are separate sites with
+// separate reports, and a Classic guild's link is not on www.
+func TestParseReportURLKeepsTheHost(t *testing.T) {
+	tests := []struct {
+		in       string
+		wantHost string
+		wantCode string
+	}{
+		{"https://www.warcraftlogs.com/reports/aBcD1234", "www.warcraftlogs.com", "aBcD1234"},
+		{"https://classic.warcraftlogs.com/reports/xyz", "classic.warcraftlogs.com", "xyz"},
+		{"https://fresh.warcraftlogs.com/reports/xyz#fight=2", "fresh.warcraftlogs.com", "xyz"},
+		{"https://warcraftlogs.com/reports/xyz", "warcraftlogs.com", "xyz"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.in, func(t *testing.T) {
+			ref, err := ParseReportURL(tt.in)
+			if err != nil {
+				t.Fatalf("ParseReportURL(%q): %v", tt.in, err)
+			}
+			if ref.Host != tt.wantHost {
+				t.Errorf("host = %q, want %q", ref.Host, tt.wantHost)
+			}
+			if ref.Code != tt.wantCode {
+				t.Errorf("code = %q, want %q", ref.Code, tt.wantCode)
+			}
+		})
+	}
+}
+
+// An empty string is how a raid lead takes a log back off an event, which NormalizeURL
+// passes through. It is not a report, so parsing it is an error.
+func TestParseReportURLRejectsEmpty(t *testing.T) {
+	if _, err := ParseReportURL(""); !errors.Is(err, ErrNotAReport) {
+		t.Errorf("err = %v, want ErrNotAReport", err)
+	}
+}
+
+func TestReportRefURLRoundTrips(t *testing.T) {
+	const in = "https://classic.warcraftlogs.com/reports/aBcD1234"
+	ref, err := ParseReportURL(in)
+	if err != nil {
+		t.Fatalf("ParseReportURL: %v", err)
+	}
+	if got := ref.URL(); got != in {
+		t.Errorf("URL() = %q, want %q", got, in)
 	}
 }

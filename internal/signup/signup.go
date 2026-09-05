@@ -31,12 +31,23 @@ var selfReported = []db.SignupStatus{
 // AllowedStatuses returns the statuses this caller may write on this signup. Write
 // enforces the same list, so the API cannot advertise a status the write path refuses.
 //
+// started closes the sheet: once the raid has begun, a raider's own answer is history and
+// the only write left is a raid lead recording a no-show. See ErrEventStarted.
+//
 // A signup is the raider's own answer and it stays theirs. A raid lead is offered
 // nothing on somebody else's but NO_SHOW, which records what happened on the night
 // rather than rewriting what that person said they would do. Who actually plays is
 // decided by the comp, which is the raid lead's to build; changing a raider's stated
 // answer is not the same act and must not be available to anyone but them.
-func AllowedStatuses(owned, isRaidLead bool) []db.SignupStatus {
+func AllowedStatuses(owned, isRaidLead, started bool) []db.SignupStatus {
+	if started {
+		// NO_SHOW survives, and only for a raid lead, because it is the one status that
+		// is about what happened rather than what somebody intended.
+		if isRaidLead {
+			return []db.SignupStatus{db.SignupStatusNOSHOW}
+		}
+		return nil
+	}
 	if owned {
 		return slices.Clone(selfReported)
 	}
@@ -56,6 +67,18 @@ func AllStatuses() []db.SignupStatus {
 // catch this and file a late_signup_requests row instead of surfacing a bare error the
 // bot has to invent a message for.
 var ErrSignupsClosed = errors.New("signups closed")
+
+// ErrEventStarted means somebody tried to change a signup after the raid began.
+//
+// Distinct from ErrSignupsClosed, and the difference matters: signups closing is what the
+// late-request queue exists for, and a raid lead can wave somebody through. A raid that
+// has already started is past all of that. Nobody signs off a night they were part of,
+// and the API must not file a late request for it either, because there is no longer
+// anything a raid lead could usefully approve.
+//
+// The one write that survives is a raid lead setting NO_SHOW, which records what happened
+// rather than changing what anyone said they would do.
+var ErrEventStarted = errors.New("event has started")
 
 // ErrStatusRequiresRaidLead means a player tried to write NO_SHOW. design.md section 3
 // makes it raid-lead-controlled regardless of who owns the character or where the
@@ -119,7 +142,19 @@ func NewSignups(store signupStore, logger *slog.Logger) *Signups {
 // isRaidLead governs the deadline gate (a raid lead can always write) and, on a
 // character that is not theirs, limits them to NO_SHOW.
 func (s *Signups) Write(ctx context.Context, in SignupWrite, owned, isRaidLead bool) (Signup, error) {
-	if !slices.Contains(AllowedStatuses(owned, isRaidLead), in.Status) {
+	event, err := s.store.GetEvent(ctx, in.EventID)
+	if err != nil {
+		return Signup{}, fmt.Errorf("loading event: %w", err)
+	}
+	started := !time.Now().Before(event.StartsAt)
+
+	if !slices.Contains(AllowedStatuses(owned, isRaidLead, started), in.Status) {
+		// Once the raid has begun the refusal is about the clock, not about who is
+		// asking, and saying so is what stops a client filing a late request nobody can
+		// act on.
+		if started {
+			return Signup{}, ErrEventStarted
+		}
 		// Two different refusals: a raider reaching for the raid lead's status, and a
 		// raid lead reaching into somebody else's answer.
 		if owned {
@@ -128,10 +163,6 @@ func (s *Signups) Write(ctx context.Context, in SignupWrite, owned, isRaidLead b
 		return Signup{}, ErrSignupNotYours
 	}
 
-	event, err := s.store.GetEvent(ctx, in.EventID)
-	if err != nil {
-		return Signup{}, fmt.Errorf("loading event: %w", err)
-	}
 	if err := checkDeadline(event, &in.Status, isRaidLead, time.Now()); err != nil {
 		return Signup{}, err
 	}
@@ -175,6 +206,12 @@ func (s *Signups) Withdraw(ctx context.Context, eventID, characterID uuid.UUID, 
 	event, err := s.store.GetEvent(ctx, eventID)
 	if err != nil {
 		return fmt.Errorf("loading event: %w", err)
+	}
+	// Nobody, raid lead included. A signup is the record of what somebody said they would
+	// do, and deleting it after the night erases the evidence a no-show is judged
+	// against. Marking NO_SHOW is the write that belongs here instead.
+	if !time.Now().Before(event.StartsAt) {
+		return ErrEventStarted
 	}
 	if err := checkDeadline(event, nil, isRaidLead, time.Now()); err != nil {
 		return err

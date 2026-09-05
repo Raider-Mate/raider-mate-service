@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/Raider-Mate/raider-mate-service/internal/db"
+	"github.com/Raider-Mate/raider-mate-service/internal/warcraftlogs"
 )
 
 // Store implements eventStore, signupStore, lateStore, and reminderStore over
@@ -275,6 +276,15 @@ func (s *Store) UpdateEvent(ctx context.Context, in UpdateEventInput) (Event, er
 		}
 	}
 
+	// The report's queue row lands with the URL that produced it. A URL stored with no
+	// row behind it is a report nobody would ever fetch, and a row left behind after the
+	// URL was cleared is a fetch for a report nobody attached.
+	if in.WarcraftLogsURL != nil {
+		if err := syncReportRow(ctx, q, row.ID, row.WarcraftlogsUrl); err != nil {
+			return Event{}, err
+		}
+	}
+
 	if in.changesWhatIsPosted() && row.MessageID != nil && row.ChannelID != nil {
 		if _, err := q.InsertNotification(ctx, db.InsertNotificationParams{
 			ID:             db.NewID(),
@@ -297,6 +307,34 @@ func (s *Store) UpdateEvent(ctx context.Context, in UpdateEventInput) (Event, er
 
 func (s *Store) DeleteEvent(ctx context.Context, id uuid.UUID) error {
 	return s.queries.DeleteEvent(ctx, id)
+}
+
+// syncReportRow creates, repoints or removes an event's report queue row to match the
+// URL now stored on it.
+func syncReportRow(ctx context.Context, q *db.Queries, eventID uuid.UUID, url *string) error {
+	if url == nil {
+		if err := q.DeleteEventReport(ctx, eventID); err != nil {
+			return fmt.Errorf("removing the report row: %w", err)
+		}
+		return nil
+	}
+
+	ref, err := warcraftlogs.ParseReportURL(*url)
+	if err != nil {
+		// The URL was normalised before it was stored, so this cannot happen from the
+		// API. A row written by hand could still get here, and refusing to queue it
+		// beats queueing a fetch of something that is not a report.
+		return fmt.Errorf("parsing the stored report url: %w", err)
+	}
+
+	if _, err := q.UpsertEventReport(ctx, db.UpsertEventReportParams{
+		EventID: eventID,
+		Host:    ref.Host,
+		Code:    ref.Code,
+	}); err != nil {
+		return fmt.Errorf("queueing the report for reading: %w", err)
+	}
+	return nil
 }
 
 // scheduleJobs writes the reminder/deadline schedule jobsFor computes for an event.

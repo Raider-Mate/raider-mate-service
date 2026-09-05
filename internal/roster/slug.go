@@ -18,7 +18,7 @@ var deaccent = map[rune]rune{
 	'ñ': 'n', 'ç': 'c', 'ý': 'y', 'ÿ': 'y',
 }
 
-// slugifyRealm turns a realm as a raider typed it into the slug Raider.IO's API
+// RealmSlug turns a realm as a raider typed it into the slug Raider.IO's API
 // expects: "Twisting Nether" becomes "twisting-nether", "Kil'jaeden" becomes
 // "kiljaeden", "Aggra (Português)" becomes "aggra-portugues". Anything that is not a
 // letter or digit collapses to a single hyphen, except the apostrophe, which
@@ -27,7 +27,11 @@ var deaccent = map[rune]rune{
 // Unlike the JVM habit of validating on the way out, this normalises on the way in:
 // the canonical form is what gets stored, so the unique index also stops the same
 // character being registered twice under two spellings of its realm.
-func slugifyRealm(realm string) string {
+//
+// Exported because internal/raidlog has to put a WarcraftLogs actor's server through
+// exactly this transformation to match it against a stored realm. Two copies would
+// drift, and the drift would be invisible: a French guild would simply stop matching.
+func RealmSlug(realm string) string {
 	var b strings.Builder
 	b.Grow(len(realm))
 

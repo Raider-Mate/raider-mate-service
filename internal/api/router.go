@@ -9,14 +9,16 @@ import (
 	"github.com/Raider-Mate/raider-mate-service/internal/audit"
 	"github.com/Raider-Mate/raider-mate-service/internal/billing"
 	"github.com/Raider-Mate/raider-mate-service/internal/comp"
+	"github.com/Raider-Mate/raider-mate-service/internal/raidlog"
 	"github.com/Raider-Mate/raider-mate-service/internal/roster"
+	"github.com/Raider-Mate/raider-mate-service/internal/secretbox"
 	"github.com/Raider-Mate/raider-mate-service/internal/signup"
 )
 
 // NewRouter builds the HTTP handler tree for the service. Wiring is by hand: each
 // domain package's Store is constructed once and handed to the use cases that need
 // it, the same shape cmd/worker uses for roster.Syncer and signup.Runner.
-func NewRouter(pool *pgxpool.Pool, apiKey string, queued queueWatcher, logger *slog.Logger) http.Handler {
+func NewRouter(pool *pgxpool.Pool, apiKey string, secrets *secretbox.Box, warcraftLogsClientID string, queued queueWatcher, logger *slog.Logger) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthzHandler(pool, logger))
 
@@ -32,6 +34,12 @@ func NewRouter(pool *pgxpool.Pool, apiKey string, queued queueWatcher, logger *s
 	locker := comp.NewLocker(compStore)
 	reader := comp.NewReader(compStore)
 	manual := comp.NewManual(compStore)
+
+	// Post-raid numbers. The store is both the worker's persistence and the API's read
+	// side; the API only ever reads, since fetching from a request handler is what hard
+	// rule 5 forbids. The credentials are the instance's, used by a guild that has not
+	// supplied its own.
+	reports := raidlog.NewStore(pool, secrets, warcraftLogsClientID, "")
 
 	signupStore := signup.NewStore(pool)
 	events := signup.NewEvents(signupStore)
@@ -78,13 +86,16 @@ func NewRouter(pool *pgxpool.Pool, apiKey string, queued queueWatcher, logger *s
 
 	apiMux.HandleFunc("POST /api/guilds/{gid}/events", createEventHandler(events, logger))
 	apiMux.HandleFunc("GET /api/guilds/{gid}/events", listGuildEventsHandler(events, logger))
-	apiMux.HandleFunc("GET /api/events/{id}", getEventHandler(events, logger))
+	apiMux.HandleFunc("GET /api/events/{id}", getEventHandler(events, reports, logger))
 	apiMux.HandleFunc("PATCH /api/events/{id}", patchEventHandler(events, logger))
 	apiMux.HandleFunc("DELETE /api/events/{id}", deleteEventHandler(events, logger))
 
 	apiMux.HandleFunc("PUT /api/events/{id}/signups/{cid}", putSignupHandler(signups, lateRequests, characters, events, logger))
 	apiMux.HandleFunc("DELETE /api/events/{id}/signups/{cid}", deleteSignupHandler(signups, lateRequests, characters, events, logger))
 	apiMux.HandleFunc("GET /api/events/{id}/signups", listSignupsHandler(signups, characters, events, logger))
+
+	apiMux.HandleFunc("GET /api/events/{id}/report", getEventReportHandler(reports, characters, events, logger))
+	apiMux.HandleFunc("POST /api/events/{id}/report/refresh", refreshEventReportHandler(reports, events, logger))
 
 	apiMux.HandleFunc("GET /api/events/{id}/late-requests", listLateRequestsHandler(lateRequests, events, logger))
 	apiMux.HandleFunc("POST /api/events/{id}/late-requests/{rid}/approve", approveLateRequestHandler(lateRequests, events, logger))

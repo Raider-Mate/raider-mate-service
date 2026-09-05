@@ -299,7 +299,7 @@ func listGuildEventsHandler(events *signup.Events, logger *slog.Logger) http.Han
 
 // getEventHandler loads one event, scoped to the actor's guild: a foreign guild's
 // event id reads as 404, not 403, so its existence is not confirmed either way.
-func getEventHandler(events *signup.Events, logger *slog.Logger) http.HandlerFunc {
+func getEventHandler(events *signup.Events, reports reportReader, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		actor, _ := actorFromContext(r.Context())
 
@@ -322,6 +322,16 @@ func getEventHandler(events *signup.Events, logger *slog.Logger) http.HandlerFun
 		}
 
 		resp := withSignupCounts(eventToResponse(event, actor), counts[event.ID])
+
+		// The report's status decides which of the three report rels the event carries.
+		// A lookup failure costs the rels and not the page: the event still reads, and
+		// the client falls back to the plain external link.
+		if status, err := reports.StatusFor(r.Context(), event.ID); err != nil {
+			logger.WarnContext(r.Context(), "reading report status", "error", err, "event_id", event.ID)
+		} else {
+			resp = withReportStatus(resp, status, actor.IsRaidLead)
+		}
+
 		// The event reads fine without it, so a failed lookup costs the reminder line
 		// and not the page.
 		state, err := events.ReminderState(r.Context(), event)

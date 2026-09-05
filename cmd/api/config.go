@@ -11,6 +11,13 @@ type Config struct {
 	Addr          string
 	LogLevel      string
 	ServiceAPIKey string
+	// WarcraftLogsClientID is read here so the API knows whether the instance has a
+	// WarcraftLogs client at all. The key itself lives only in the worker: the API never
+	// authenticates against WarcraftLogs and must not hold a credential it cannot need.
+	WarcraftLogsClientID string
+	// WarcraftLogsEncryptionKey seals a guild's own WarcraftLogs key. Without it the
+	// service refuses to store one rather than writing it in the clear.
+	WarcraftLogsEncryptionKey string
 }
 
 func loadConfig() (Config, error) {
@@ -35,6 +42,9 @@ func loadConfig() (Config, error) {
 	}
 
 	return Config{
+		WarcraftLogsClientID:      os.Getenv("WARCRAFT_LOGS_CLIENT_ID"),
+		WarcraftLogsEncryptionKey: os.Getenv("WARCRAFT_LOGS_ENCRYPTION_KEY"),
+
 		DatabaseURL:   databaseURL,
 		Addr:          addr,
 		LogLevel:      logLevel,

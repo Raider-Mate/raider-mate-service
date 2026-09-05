@@ -25,8 +25,8 @@ func TestSlugifyRealm(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := slugifyRealm(tt.in); got != tt.want {
-				t.Errorf("slugifyRealm(%q) = %q, want %q", tt.in, got, tt.want)
+			if got := RealmSlug(tt.in); got != tt.want {
+				t.Errorf("RealmSlug(%q) = %q, want %q", tt.in, got, tt.want)
 			}
 		})
 	}
@@ -37,9 +37,9 @@ func TestSlugifyRealm(t *testing.T) {
 // slugifying at fetch time.
 func TestSlugifyRealmIsIdempotent(t *testing.T) {
 	for _, in := range []string{"Twisting Nether", "Kil'jaeden", "Aggra (Português)", "Area-52"} {
-		once := slugifyRealm(in)
-		if twice := slugifyRealm(once); twice != once {
-			t.Errorf("slugifyRealm(%q) not idempotent: %q then %q", in, once, twice)
+		once := RealmSlug(in)
+		if twice := RealmSlug(once); twice != once {
+			t.Errorf("RealmSlug(%q) not idempotent: %q then %q", in, once, twice)
 		}
 	}
 }

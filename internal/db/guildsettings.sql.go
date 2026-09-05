@@ -10,7 +10,7 @@ import (
 )
 
 const getGuildSettings = `-- name: GetGuildSettings :one
-SELECT discord_guild_id, events_channel_id, updated_at, timezone, event_mention_role_ids, event_banner_url, reminder_lead_minutes, reminder_delivery FROM guild_settings
+SELECT discord_guild_id, events_channel_id, updated_at, timezone, event_mention_role_ids, event_banner_url, reminder_lead_minutes, reminder_delivery, warcraft_logs_client_id, warcraft_logs_key_sealed, warcraft_logs_key_set_at FROM guild_settings
 WHERE discord_guild_id = $1
 `
 
@@ -26,6 +26,9 @@ func (q *Queries) GetGuildSettings(ctx context.Context, discordGuildID int64) (G
 		&i.EventBannerUrl,
 		&i.ReminderLeadMinutes,
 		&i.ReminderDelivery,
+		&i.WarcraftLogsClientID,
+		&i.WarcraftLogsKeySealed,
+		&i.WarcraftLogsKeySetAt,
 	)
 	return i, err
 }
@@ -41,7 +44,7 @@ SET events_channel_id = excluded.events_channel_id,
     reminder_lead_minutes = excluded.reminder_lead_minutes,
     reminder_delivery = excluded.reminder_delivery,
     updated_at = now()
-RETURNING discord_guild_id, events_channel_id, updated_at, timezone, event_mention_role_ids, event_banner_url, reminder_lead_minutes, reminder_delivery
+RETURNING discord_guild_id, events_channel_id, updated_at, timezone, event_mention_role_ids, event_banner_url, reminder_lead_minutes, reminder_delivery, warcraft_logs_client_id, warcraft_logs_key_sealed, warcraft_logs_key_set_at
 `
 
 type UpsertGuildSettingsParams struct {
@@ -76,6 +79,9 @@ func (q *Queries) UpsertGuildSettings(ctx context.Context, arg UpsertGuildSettin
 		&i.EventBannerUrl,
 		&i.ReminderLeadMinutes,
 		&i.ReminderDelivery,
+		&i.WarcraftLogsClientID,
+		&i.WarcraftLogsKeySealed,
+		&i.WarcraftLogsKeySetAt,
 	)
 	return i, err
 }

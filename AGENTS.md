@@ -57,7 +57,7 @@ Violating these produces broken behaviour, not just untidy code.
    no uuid column carries a `DEFAULT`. Discord snowflakes stay `bigint` in separate
    columns.
 4. **Never delete data on subscription lapse.** Hide it behind an upsell state.
-5. **Never call Raider.IO from a request handler.** Read cached values. Refresh
+5. **Never call Raider.IO or WarcraftLogs from a request handler.** Read cached values. Refresh
    happens in a background job.
 6. **No `discordgo` types anywhere in this repo.** This service has no Discord
    dependency. If a handler needs to know about Discord concepts, that belongs in

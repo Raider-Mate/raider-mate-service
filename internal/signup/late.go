@@ -106,16 +106,22 @@ func NewLateRequests(store lateStore, logger *slog.Logger) *LateRequests {
 func (l *LateRequests) File(ctx context.Context, in LateRequestWrite) (LateRequest, error) {
 	var req LateRequest
 	err := l.store.TransactLate(ctx, func(ctx context.Context, tx lateStore) error {
+		// Nothing gets filed against a raid that has already begun. The queue exists so a
+		// raid lead can wave somebody in before the pull; after it there is nothing left
+		// to approve, and a pending row would sit in their queue forever.
+		event, err := tx.GetEvent(ctx, in.EventID)
+		if err != nil {
+			return fmt.Errorf("loading event: %w", err)
+		}
+		if !time.Now().Before(event.StartsAt) {
+			return ErrEventStarted
+		}
+
 		filed, err := tx.UpsertLateRequest(ctx, in)
 		if err != nil {
 			return fmt.Errorf("filing late request: %w", err)
 		}
 		req = filed
-
-		event, err := tx.GetEvent(ctx, in.EventID)
-		if err != nil {
-			return fmt.Errorf("loading event: %w", err)
-		}
 
 		// A ROLE notification with no channel to post in is worse than none; the bot
 		// has not learned this event's channel yet (see events.channel_id). The request
@@ -192,6 +198,15 @@ func (l *LateRequests) Approve(ctx context.Context, id uuid.UUID) error {
 		if req.State != db.RequestStatePENDING {
 			return fmt.Errorf("approving late request: %w", ErrRequestDecided)
 		}
+		// The raid started while this sat in the queue. Approving now would write a
+		// signup onto a night that already happened.
+		event, err := tx.GetEvent(ctx, req.EventID)
+		if err != nil {
+			return fmt.Errorf("loading event: %w", err)
+		}
+		if !time.Now().Before(event.StartsAt) {
+			return ErrEventStarted
+		}
 		_, droppedFrom, err := tx.UpsertSignup(ctx, SignupWrite{
 			EventID:     req.EventID,
 			CharacterID: req.CharacterID,
@@ -206,10 +221,6 @@ func (l *LateRequests) Approve(ctx context.Context, id uuid.UUID) error {
 			return fmt.Errorf("marking late request approved: %w", err)
 		}
 
-		event, err := tx.GetEvent(ctx, req.EventID)
-		if err != nil {
-			return fmt.Errorf("loading event: %w", err)
-		}
 		// An approval puts a raider back on the sheet, so the message is now wrong in
 		// the channel everyone reads. Unconditional, unlike the dropped-slot notice
 		// below, which only applies when a locked comp lost a seat.

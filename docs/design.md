@@ -45,6 +45,21 @@ Do not chase the timeline. Cooldown planning, log parsing and sim-backed loot li
 top-end raid knowledge and an addon pipeline, and they are the thing WoWUtils is
 genuinely good at. A worse version of it would cost the whole of v0.1 and win nobody.
 
+**Reversed in part, deliberately and narrowly.** The service now reads a report a raid
+lead has attached and shows what it says: the pulls, damage and healing per raider over
+the night, deaths, and who the log actually saw against who said they were coming. That
+is a read, not an analysis. It contacts WarcraftLogs, stores what came back, and stops.
+
+Nothing in it plans a pull. There is no cooldown timeline, no per-boss assignment, no
+in-game note export, no sim-backed loot list, and no parse percentile or ranking colour,
+and those stay out for exactly the reason they were ruled out above: they need top-end
+raid knowledge and an addon pipeline, and a worse version of WoWUtils wins nobody.
+
+What made this slice worth doing is that the last question of the raid week, "did the
+twenty people who said yes actually zone in", was answerable from a log and from nothing
+else this service holds. The damage board is what a raid lead came for; the turnout is
+what only Raider Mate can tell them, because only Raider Mate has the signup sheet.
+
 What separates the two, in the order it matters:
 
 **Open source and self-hostable.** WoWUtils is proprietary SaaS and cannot follow
@@ -713,3 +728,47 @@ Gate tiers with a single `requireTier(guildId, PREMIUM)` check at the service la
 not sprinkled through handlers. When a subscription lapses, **hide** the data behind an
 upsell state; never delete it. People resubscribe when their history is sitting there
 greyed out.
+
+## 12. Migrations must not break the binary still running
+
+Adding rows to a table an older binary already reads is a breaking change, even when the
+schema change itself is additive. That reader has no filter for a column that did not
+exist when it was written, and it will serve whatever you added as though it were the
+thing it asked for.
+
+This is not hypothetical. Per-pull damage was first stored in `event_report_raiders`
+behind `fight_id = 0` for the night. Every deployed reader of that table then returned the
+night totals plus all ten pulls as one list, and a damage board showed each raider eleven
+times. The schema migration was clean; the running service was wrong the moment it applied.
+
+The rule: **new facts go in new tables.** An old binary keeps reading exactly what it
+always read, and only new code knows about the new table. Where that is genuinely
+impossible, the migration and the deploy have to be ordered and stated as one step, rather
+than assumed to be.
+
+It is usually also the better model. The night's totals and one pull's numbers have
+different lifetimes and different keys, and a sentinel value in a key column is a thing
+somebody will eventually read wrong.
+
+## 13. Signups are final once the raid starts
+
+`signup_deadline` closes the sheet and the late-request queue is the way around it: a raid
+lead can wave somebody in right up to the pull. `starts_at` is the harder line, and there
+is no way around it.
+
+Past it, every signup write is refused, for raiders and raid leads alike, and
+`AllowedStatuses` returns nothing so a client never renders a control the write path will
+reject. `ErrEventStarted` is deliberately a different error from `ErrSignupsClosed`: the
+API files a late request for the second and must not for the first, because there is no
+longer anything an approval could achieve.
+
+Two exceptions, both narrow and both about recording rather than deciding:
+
+- A raid lead may still set `NO_SHOW`. It is the one status that describes what happened
+  instead of what somebody intended, and it can only be known after the fact.
+- Nothing else. Withdrawing is refused for raid leads too, because a signup is the record
+  a no-show is judged against and deleting it erases the evidence.
+
+The rule lives in `internal/signup` rather than in either client, which is what makes it
+true of the bot and the dashboard at once. Neither is trusted to enforce it; both are told
+what to render.

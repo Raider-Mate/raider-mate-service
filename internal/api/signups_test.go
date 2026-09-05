@@ -47,15 +47,15 @@ func TestSignupAllowedStatusesMatchWhatTheCallerMayWrite(t *testing.T) {
 		isRaidLead bool
 		want       []db.SignupStatus
 	}{
-		{"own signup", true, false, signup.AllowedStatuses(true, false)},
-		{"own signup, raid lead", true, true, signup.AllowedStatuses(true, true)},
+		{"own signup", true, false, signup.AllowedStatuses(true, false, false)},
+		{"own signup, raid lead", true, true, signup.AllowedStatuses(true, true, false)},
 		{"another's, raid lead", false, true, []db.SignupStatus{db.SignupStatusNOSHOW}},
 		{"another's, player", false, false, nil},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := signupToResponse(signup.Signup{}, tt.owned, tt.isRaidLead).AllowedStatuses
+			got := signupToResponse(signup.Signup{}, tt.owned, tt.isRaidLead, false).AllowedStatuses
 
 			want := make([]string, 0, len(tt.want))
 			for _, status := range tt.want {
@@ -71,7 +71,7 @@ func TestSignupAllowedStatusesMatchWhatTheCallerMayWrite(t *testing.T) {
 // NO_SHOW is the raid lead's judgement about the night, so offering it to a player
 // would advertise a transition the write path answers with a 403.
 func TestSignupAllowedStatusesWithholdNoShowFromAPlayer(t *testing.T) {
-	got := signupToResponse(signup.Signup{}, true, false).AllowedStatuses
+	got := signupToResponse(signup.Signup{}, true, false, false).AllowedStatuses
 
 	if slices.Contains(got, string(db.SignupStatusNOSHOW)) {
 		t.Errorf("allowed_statuses = %v, want NO_SHOW withheld", got)
@@ -81,7 +81,7 @@ func TestSignupAllowedStatusesWithholdNoShowFromAPlayer(t *testing.T) {
 // The rule a toxic raid lead would otherwise be able to break: somebody else's answer
 // is not theirs to change, so nothing but NO_SHOW is ever advertised on it.
 func TestSignupAllowedStatusesWithholdEverythingButNoShowFromARaidLead(t *testing.T) {
-	got := signupToResponse(signup.Signup{}, false, true).AllowedStatuses
+	got := signupToResponse(signup.Signup{}, false, true, false).AllowedStatuses
 
 	if len(got) != 1 || got[0] != string(db.SignupStatusNOSHOW) {
 		t.Errorf("allowed_statuses = %v, want NO_SHOW alone", got)

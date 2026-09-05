@@ -22,6 +22,19 @@ type Config struct {
 	RaiderIOMinInterval time.Duration
 	JobPollInterval     time.Duration
 	JobBatch            int32
+	// WarcraftLogs is the instance's own API client, used by a guild that has not
+	// supplied one of its own. Both empty turns report reading off for guilds without
+	// their own key, rather than breaking anything.
+	WarcraftLogsClientID      string
+	WarcraftLogsAPIKey        string
+	WarcraftLogsEncryptionKey string
+	WarcraftLogsBaseURL       string
+	WarcraftLogsPollInterval  time.Duration
+	WarcraftLogsBatch         int32
+	WarcraftLogsMinInterval   time.Duration
+	// WarcraftLogsLiveRefresh is how often a report that is still being written to gets
+	// re-read. A raid night appends to its report while it runs.
+	WarcraftLogsLiveRefresh time.Duration
 	// GearRules is the season's game data. Both halves are optional and unset means the
 	// worker establishes nothing for them, which the API reports as an absent field
 	// rather than as a zero.
@@ -102,7 +115,50 @@ func loadConfig() (Config, error) {
 	}
 	currentRaidSlug := os.Getenv("CURRENT_RAID_SLUG")
 
+	warcraftLogsClientID := os.Getenv("WARCRAFT_LOGS_CLIENT_ID")
+	warcraftLogsAPIKey := os.Getenv("WARCRAFT_LOGS_API_KEY")
+	// Half a credential is a typo, not a configuration, and the loader already fails
+	// loudly on values it cannot use.
+	if (warcraftLogsClientID == "") != (warcraftLogsAPIKey == "") {
+		return Config{}, fmt.Errorf("WARCRAFT_LOGS_CLIENT_ID and WARCRAFT_LOGS_API_KEY must be set together")
+	}
+	warcraftLogsPollInterval, err := envDuration("WARCRAFT_LOGS_POLL_INTERVAL", 5*time.Minute)
+	if err != nil {
+		return Config{}, err
+	}
+	if warcraftLogsPollInterval <= 0 {
+		return Config{}, fmt.Errorf("WARCRAFT_LOGS_POLL_INTERVAL must be positive, got %s", warcraftLogsPollInterval)
+	}
+	warcraftLogsBatch, err := envInt32("WARCRAFT_LOGS_BATCH", 5)
+	if err != nil {
+		return Config{}, err
+	}
+	if warcraftLogsBatch <= 0 {
+		return Config{}, fmt.Errorf("WARCRAFT_LOGS_BATCH must be positive, got %d", warcraftLogsBatch)
+	}
+	// Zero is legal and means no gating, same as the Raider.IO one above.
+	warcraftLogsMinInterval, err := envDuration("WARCRAFT_LOGS_MIN_INTERVAL", time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	warcraftLogsLiveRefresh, err := envDuration("WARCRAFT_LOGS_LIVE_REFRESH", 15*time.Minute)
+	if err != nil {
+		return Config{}, err
+	}
+	if warcraftLogsLiveRefresh <= 0 {
+		return Config{}, fmt.Errorf("WARCRAFT_LOGS_LIVE_REFRESH must be positive, got %s", warcraftLogsLiveRefresh)
+	}
+
 	return Config{
+		WarcraftLogsClientID:      warcraftLogsClientID,
+		WarcraftLogsAPIKey:        warcraftLogsAPIKey,
+		WarcraftLogsEncryptionKey: os.Getenv("WARCRAFT_LOGS_ENCRYPTION_KEY"),
+		WarcraftLogsBaseURL:       os.Getenv("WARCRAFT_LOGS_BASE_URL"),
+		WarcraftLogsPollInterval:  warcraftLogsPollInterval,
+		WarcraftLogsBatch:         warcraftLogsBatch,
+		WarcraftLogsMinInterval:   warcraftLogsMinInterval,
+		WarcraftLogsLiveRefresh:   warcraftLogsLiveRefresh,
+
 		DatabaseURL:         databaseURL,
 		LogLevel:            logLevel,
 		SyncInterval:        syncInterval,

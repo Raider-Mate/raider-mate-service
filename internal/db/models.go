@@ -455,6 +455,52 @@ func (ns NullReminderDelivery) Value() (driver.Value, error) {
 	return string(ns.ReminderDelivery), nil
 }
 
+type ReportStatus string
+
+const (
+	ReportStatusPENDING     ReportStatus = "PENDING"
+	ReportStatusREADY       ReportStatus = "READY"
+	ReportStatusPRIVATE     ReportStatus = "PRIVATE"
+	ReportStatusNOTFOUND    ReportStatus = "NOT_FOUND"
+	ReportStatusARCHIVED    ReportStatus = "ARCHIVED"
+	ReportStatusUNAVAILABLE ReportStatus = "UNAVAILABLE"
+)
+
+func (e *ReportStatus) Scan(src interface{}) error {
+	switch s := src.(type) {
+	case []byte:
+		*e = ReportStatus(s)
+	case string:
+		*e = ReportStatus(s)
+	default:
+		return fmt.Errorf("unsupported scan type for ReportStatus: %T", src)
+	}
+	return nil
+}
+
+type NullReportStatus struct {
+	ReportStatus ReportStatus
+	Valid        bool // Valid is true if ReportStatus is not NULL
+}
+
+// Scan implements the Scanner interface.
+func (ns *NullReportStatus) Scan(value interface{}) error {
+	if value == nil {
+		ns.ReportStatus, ns.Valid = "", false
+		return nil
+	}
+	ns.Valid = true
+	return ns.ReportStatus.Scan(value)
+}
+
+// Value implements the driver Valuer interface.
+func (ns NullReportStatus) Value() (driver.Value, error) {
+	if !ns.Valid {
+		return nil, nil
+	}
+	return string(ns.ReportStatus), nil
+}
+
 type RequestState string
 
 const (
@@ -747,6 +793,63 @@ type Event struct {
 	WarcraftlogsUrl     *string
 }
 
+type EventReport struct {
+	EventID        uuid.UUID
+	Host           string
+	Code           string
+	Status         ReportStatus
+	Revision       *int32
+	Live           bool
+	Title          *string
+	ZoneName       *string
+	Region         *string
+	ReportStartsAt pgtype.Timestamptz
+	ReportEndsAt   pgtype.Timestamptz
+	FetchedAt      pgtype.Timestamptz
+	NextAttemptAt  pgtype.Timestamptz
+	Attempts       int16
+	FailureReason  *string
+}
+
+type EventReportFight struct {
+	EventID         uuid.UUID
+	FightID         int32
+	EncounterID     int32
+	Name            string
+	Difficulty      *int32
+	RaidSize        *int32
+	Kill            bool
+	BossPercentage  pgtype.Numeric
+	FightPercentage pgtype.Numeric
+	StartsAt        pgtype.Timestamptz
+	EndsAt          pgtype.Timestamptz
+}
+
+type EventReportFightRaider struct {
+	EventID     uuid.UUID
+	FightID     int32
+	ActorID     int32
+	ActorName   string
+	ActorServer string
+	Class       *string
+	CharacterID pgtype.UUID
+	Damage      int64
+	Healing     int64
+	Deaths      int32
+}
+
+type EventReportRaider struct {
+	EventID     uuid.UUID
+	ActorID     int32
+	ActorName   string
+	ActorServer string
+	Class       *string
+	CharacterID pgtype.UUID
+	Damage      int64
+	Healing     int64
+	Deaths      int32
+}
+
 type GuildChannel struct {
 	DiscordGuildID   int64
 	DiscordChannelID int64
@@ -768,14 +871,17 @@ type GuildRole struct {
 }
 
 type GuildSetting struct {
-	DiscordGuildID      int64
-	EventsChannelID     *int64
-	UpdatedAt           pgtype.Timestamptz
-	Timezone            *string
-	EventMentionRoleIds []int64
-	EventBannerUrl      *string
-	ReminderLeadMinutes *int32
-	ReminderDelivery    *ReminderDelivery
+	DiscordGuildID        int64
+	EventsChannelID       *int64
+	UpdatedAt             pgtype.Timestamptz
+	Timezone              *string
+	EventMentionRoleIds   []int64
+	EventBannerUrl        *string
+	ReminderLeadMinutes   *int32
+	ReminderDelivery      *ReminderDelivery
+	WarcraftLogsClientID  *string
+	WarcraftLogsKeySealed []byte
+	WarcraftLogsKeySetAt  pgtype.Timestamptz
 }
 
 type LateSignupRequest struct {

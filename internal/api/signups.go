@@ -46,7 +46,9 @@ func signupLinks(eventID, characterID string, mayWrite, mayWithdraw bool) Links 
 	return links
 }
 
-func signupToResponse(s signup.Signup, owned, isRaidLead bool) signupResponse {
+// started is whether the raid has begun. Past that the sheet is history: nobody may take
+// their name off it, and the only status left is a raid lead's NO_SHOW.
+func signupToResponse(s signup.Signup, owned, isRaidLead, started bool) signupResponse {
 	var assignedRole *string
 	if s.AssignedRole != nil {
 		r := string(*s.AssignedRole)
@@ -54,7 +56,7 @@ func signupToResponse(s signup.Signup, owned, isRaidLead bool) signupResponse {
 	}
 
 	var allowed []string
-	for _, status := range signup.AllowedStatuses(owned, isRaidLead) {
+	for _, status := range signup.AllowedStatuses(owned, isRaidLead, started) {
 		allowed = append(allowed, string(status))
 	}
 
@@ -66,7 +68,7 @@ func signupToResponse(s signup.Signup, owned, isRaidLead bool) signupResponse {
 		LateUntil:       s.LateUntil,
 		Note:            s.Note,
 		AllowedStatuses: allowed,
-		Links:           signupLinks(s.EventID.String(), s.CharacterID.String(), len(allowed) > 0, owned),
+		Links:           signupLinks(s.EventID.String(), s.CharacterID.String(), len(allowed) > 0, owned && !started),
 	}
 }
 
@@ -98,9 +100,11 @@ func putSignupHandler(signups *signup.Signups, lateRequests *signup.LateRequests
 
 		// Before the ownership check, not inside it: the raid-lead branch below skips
 		// ownership, so scoping here is what stops one guild's lead writing another's.
-		if _, ok := requireEventInGuild(w, r, events, logger, eventID); !ok {
+		event, ok := requireEventInGuild(w, r, events, logger, eventID)
+		if !ok {
 			return
 		}
+		started := !time.Now().Before(event.StartsAt)
 
 		// Two different questions. A raid lead may act on anyone's character, but only
 		// one of their own guild's: without this, a foreign character id would be
@@ -146,6 +150,11 @@ func putSignupHandler(signups *signup.Signups, lateRequests *signup.LateRequests
 		}, owned, actor.IsRaidLead)
 
 		switch {
+		case errors.Is(err, signup.ErrEventStarted):
+			// Deliberately not a late request. Signups closing is what that queue is
+			// for; a raid that already happened is past anything a raid lead could
+			// approve.
+			writeError(w, logger, http.StatusConflict, "That raid has already started, so the sheet is final.")
 		case errors.Is(err, signup.ErrSignupsClosed):
 			fileLateRequest(w, r, lateRequests, logger, eventID, characterID, status, body.Note, body.LateUntil, actor.IsRaidLead)
 		case errors.Is(err, signup.ErrStatusRequiresRaidLead):
@@ -156,7 +165,7 @@ func putSignupHandler(signups *signup.Signups, lateRequests *signup.LateRequests
 			logger.ErrorContext(r.Context(), "writing signup", "error", err)
 			writeError(w, logger, http.StatusInternalServerError, "internal error")
 		default:
-			writeJSON(w, logger, http.StatusOK, signupToResponse(written, owned, actor.IsRaidLead))
+			writeJSON(w, logger, http.StatusOK, signupToResponse(written, owned, actor.IsRaidLead, started))
 		}
 	}
 }
@@ -212,6 +221,8 @@ func deleteSignupHandler(signups *signup.Signups, lateRequests *signup.LateReque
 
 		err = signups.Withdraw(r.Context(), eventID, characterID, actor.IsRaidLead)
 		switch {
+		case errors.Is(err, signup.ErrEventStarted):
+			writeError(w, logger, http.StatusConflict, "That raid has already started, so the sheet is final.")
 		case errors.Is(err, signup.ErrSignupsClosed):
 			fileLateRequest(w, r, lateRequests, logger, eventID, characterID, db.SignupStatusDECLINED, nil, nil, actor.IsRaidLead)
 		case err != nil:
@@ -231,6 +242,12 @@ func fileLateRequest(w http.ResponseWriter, r *http.Request, lateRequests *signu
 	req, err := lateRequests.File(r.Context(), signup.LateRequestWrite{
 		EventID: eventID, CharacterID: characterID, Status: status, Note: note, LateUntil: lateUntil,
 	})
+	if errors.Is(err, signup.ErrEventStarted) {
+		// The raid began between the signup write being refused and this filing. There is
+		// no longer anything a raid lead could approve.
+		writeError(w, logger, http.StatusConflict, "That raid has already started, so the sheet is final.")
+		return
+	}
 	if err != nil {
 		logger.ErrorContext(r.Context(), "filing late request", "error", err)
 		writeError(w, logger, http.StatusInternalServerError, "internal error")
@@ -253,9 +270,11 @@ func listSignupsHandler(signups *signup.Signups, characters *roster.Characters, 
 			return
 		}
 
-		if _, ok := requireEventInGuild(w, r, events, logger, eventID); !ok {
+		event, ok := requireEventInGuild(w, r, events, logger, eventID)
+		if !ok {
 			return
 		}
+		started := !time.Now().Before(event.StartsAt)
 
 		list, err := signups.List(r.Context(), eventID)
 		if err != nil {
@@ -287,7 +306,7 @@ func listSignupsHandler(signups *signup.Signups, characters *roster.Characters, 
 
 		out := make([]signupResponse, len(list))
 		for i, s := range list {
-			out[i] = signupToResponse(s, owned[s.CharacterID], actor.IsRaidLead)
+			out[i] = signupToResponse(s, owned[s.CharacterID], actor.IsRaidLead, started)
 			out[i].Character = lookupCharacter(byID, s.CharacterID)
 		}
 		writeJSON(w, logger, http.StatusOK, out)

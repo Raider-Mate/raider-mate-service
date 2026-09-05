@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/Raider-Mate/raider-mate-service/internal/api"
+	"github.com/Raider-Mate/raider-mate-service/internal/secretbox"
 	"github.com/Raider-Mate/raider-mate-service/internal/signup"
 	"github.com/Raider-Mate/raider-mate-service/migrations"
 )
@@ -67,11 +68,19 @@ func run() error {
 		return acquired.Hijack(), nil
 	}, hub, logger).Run(ctx)
 
+	// Nil when no encryption key is configured, which is a supported instance: it stores
+	// no guild credentials and says so when asked to, rather than storing one in the
+	// clear.
+	secrets, err := secretbox.New(cfg.WarcraftLogsEncryptionKey)
+	if err != nil {
+		return fmt.Errorf("reading WARCRAFT_LOGS_ENCRYPTION_KEY: %w", err)
+	}
+
 	// net/http has no default timeouts, unlike a servlet container. Without these a
 	// client that dribbles headers holds a connection open forever.
 	srv := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           api.NewRouter(pool, cfg.ServiceAPIKey, hub, logger),
+		Handler:           api.NewRouter(pool, cfg.ServiceAPIKey, secrets, cfg.WarcraftLogsClientID, hub, logger),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,

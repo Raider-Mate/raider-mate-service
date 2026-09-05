@@ -129,6 +129,8 @@ func approveLateRequestHandler(lateRequests *signup.LateRequests, events eventLo
 
 		err := lateRequests.Approve(r.Context(), id)
 		switch {
+		case errors.Is(err, signup.ErrEventStarted):
+			writeError(w, logger, http.StatusConflict, "That raid has already started, so the sheet is final.")
 		case errors.Is(err, signup.ErrRequestDecided):
 			writeError(w, logger, http.StatusConflict, "late request already decided")
 		case err != nil:
